@@ -1,12 +1,12 @@
 {
-    "schema":  "setpoint-public-mirror-v1",
-    "source_private_repo":  "GodParticles1/Setpoint",
-    "source_private_sha":  "65511a2a9c5498916de4f1fbb3a1e1e40280ceeb",
-    "governance_private_sha":  "2aff519c504a54ec6fae4dead0c2e8a5f36ba602",
-    "projection_paths":  [
-                             ".gitattributes",
-                             "app"
-                         ],
-    "source_projection_git_tree_sha256":  "eec933c0a53a281ed677d732e7cc89cb8cd21943cbbdf382dd7da55f6a95c750",
-    "public_ci_workflow_sha256":  "306a0939dbee0c90b45e58289ccbfb5e55eba3e3c2b1662263088d1fc356720b"
+  "schema": "setpoint-public-mirror-v1",
+  "source_private_repo": "GodParticles1/Setpoint",
+  "source_private_sha": "65511a2a9c5498916de4f1fbb3a1e1e40280ceeb",
+  "governance_private_sha": "dfdc850d62214cc5a64b8a6edeaa1e2aa6e68a56",
+  "projection_paths": [
+    ".gitattributes",
+    "app"
+  ],
+  "source_projection_git_tree_sha256": "eec933c0a53a281ed677d732e7cc89cb8cd21943cbbdf382dd7da55f6a95c750",
+  "public_ci_workflow_sha256": "ce9c5b67ac4791be5353cd56874b63a3a5347a16cf7899f7758e1b361f552aec"
 }

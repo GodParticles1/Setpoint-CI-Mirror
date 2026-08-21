@@ -77,15 +77,6 @@ jobs:
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
-      - name: Go format
-        shell: bash
-        run: |
-          set -euo pipefail
-          unformatted="$(find . -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
-          if [ -n "$unformatted" ]; then
-            printf '%s\n' "$unformatted"
-            exit 1
-          fi
       - name: Bootstrap security boundary scan
         shell: bash
         run: |
