@@ -18,11 +18,12 @@ export function ChecksPage({ navigate }: { navigate: (path: string) => void }) {
 
   if (resource.loading && !resource.data) return <Loading label="正在读取检查目录" />
   if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.refresh} />
-  const { definitions, bundles, policies } = resource.data!
+  const { definitions: rawDefinitions, bundles, policies } = resource.data!
+  const definitions = rawDefinitions.map(normalizeCheckDefinition)
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
   const systems = [...new Set(definitions.flatMap((definition) => definition.supported_systems))].sort()
   const filtered = definitions.filter((definition) => {
-    const text = [definition.name, definition.id, definition.category, definition.description, definition.recommended_value, ...(definition.source_refs || [])]
+    const text = [definition.name, definition.id, definition.category, definition.description, definition.recommended_value, ...definition.source_refs]
       .join(' ').toLocaleLowerCase('zh-CN')
     return (!normalizedQuery || text.includes(normalizedQuery)) && (risk === 'all' || definition.risk === risk) && (system === 'all' || definition.supported_systems.includes(system))
   })
@@ -55,14 +56,23 @@ export function ChecksPage({ navigate }: { navigate: (path: string) => void }) {
   </>
 }
 
-function CheckRow({ check, relationships }: { check: GranularCheckDefinition; relationships?: { bundles: string[]; policies: string[] } }) {
+function normalizeCheckDefinition(check: GranularCheckDefinition): GranularCheckDefinition & { source_refs: string[] } {
+  return {
+    ...check,
+    supported_systems: Array.isArray(check.supported_systems) ? check.supported_systems : [],
+    parameters: Array.isArray(check.parameters) ? check.parameters : [],
+    source_refs: Array.isArray(check.source_refs) ? check.source_refs : [],
+  }
+}
+
+function CheckRow({ check, relationships }: { check: GranularCheckDefinition & { source_refs: string[] }; relationships?: { bundles: string[]; policies: string[] } }) {
   return <tr>
     <td className="check-name-cell"><strong>{check.name}</strong><small>{check.id}</small><p>{check.description}</p>{check.parameters.length > 0 && <details className="check-parameters"><summary>参数说明 · {check.parameters.length}</summary><ul>{check.parameters.map((parameter) => <li key={parameter.name}><code>{parameter.name}</code><span>{parameter.type}{parameter.required ? ' · 必填' : ' · 可选'}</span><p>{parameter.description}</p>{parameter.options?.length ? <small>允许值：{parameter.options.join(' / ')}</small> : null}</li>)}</ul><p className="parameter-authority">前端仅提供输入提示，Server 仍是最终参数契约权威。</p></details>}</td>
     <td className="recommended-cell">{check.recommended_value}</td>
     <td><span className={`risk risk-${check.risk}`}>{riskLabel(check.risk)}</span></td>
     <td>{check.supported_systems.join(', ')}</td>
     <td><RelationshipList relationships={relationships} /></td>
-    <td><SourceRefs values={check.source_refs || []} /></td>
+    <td><SourceRefs values={check.source_refs} /></td>
   </tr>
 }
 
