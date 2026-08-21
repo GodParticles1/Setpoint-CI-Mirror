@@ -1,0 +1,7 @@
+PUBLIC_CI_SHA=49f12e1fc99bccb55d56ea4301d45cd49ba40cc4
+PUBLIC_CI_RUN_ID=32467649328
+PUBLIC_CI_CONCLUSION=success
+JOB=Verify projection provenance CONCLUSION=success
+JOB=Full Go race gate CONCLUSION=success
+JOB=Go test and vet CONCLUSION=success
+JOB=Frontend CONCLUSION=success
