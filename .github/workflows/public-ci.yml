@@ -1,0 +1,144 @@
+name: Public Mirror CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    name: Verify projection provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify projected source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(python3 -c 'import json; print(json.load(open(".public-mirror/provenance.json", encoding="utf-8"))["source_projection_git_tree_sha256"])')"
+          actual="$(git ls-tree -r HEAD -- app .gitattributes | sha256sum | awk '{print $1}')"
+          test "$actual" = "$expected"
+          echo "source projection tree: PASS"
+      - name: Verify public CI workflow digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(python3 -c 'import json; print(json.load(open(".public-mirror/provenance.json", encoding="utf-8"))["public_ci_workflow_sha256"])')"
+          actual="$(sha256sum .github/workflows/public-ci.yml | awk '{print $1}')"
+          test "$actual" = "$expected"
+          echo "public workflow digest: PASS"
+      - name: Print source binding
+        shell: bash
+        run: |
+          python3 -c 'import json; p=json.load(open(".public-mirror/provenance.json", encoding="utf-8")); print("PRIVATE_SOURCE_SHA="+p["source_private_sha"]); print("PUBLIC_CI_SHA="+"${{ github.sha }}")'
+
+  frontend:
+    name: Frontend
+    needs: provenance
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/web/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Production build
+        run: pnpm build
+
+  go:
+    name: Go test and vet
+    needs: provenance
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Go format
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(find . -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Bootstrap security boundary scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            internal/bootstrap/artifact.go
+            internal/bootstrap/contracts.go
+            internal/bootstrap/service.go
+            internal/bootstrap/ssh_transport.go
+            internal/api/node_bootstrap.go
+            internal/app/bootstrap_adapter.go
+            internal/agent/config.go
+            internal/protocol/node_bootstrap.go
+            internal/server/config.go
+          )
+          forbidden='InsecureIgnoreHostKey|rm[[:space:]]+-rf|(^|[^[:alnum:]_])(sudo|pkill|killall)([^[:alnum:]_]|$)|(^|[[:space:];|&])su([[:space:]]|$)'
+          if grep -En "$forbidden" "${files[@]}"; then exit 1; fi
+          if grep -En '(/ssh/exec|"/ssh/|Exec\()' internal/bootstrap/contracts.go internal/bootstrap/service.go internal/api/node_bootstrap.go; then exit 1; fi
+          if grep -En 'autoComplete="(username|current-password)"' web/src/pages/NodeBootstrapDialog.tsx; then exit 1; fi
+      - name: Validate Agent distribution script
+        run: bash -n scripts/package-agent-distribution.sh
+      - name: Package formal Agent distribution
+        env:
+          SETPOINT_VERSION: public-ci-${{ github.sha }}
+        run: bash scripts/package-agent-distribution.sh "${{ github.workspace }}/app/.cache/agent-distribution"
+      - name: Verify formal Agent distribution
+        env:
+          SETPOINT_TEST_AGENT_DISTRIBUTION_DIR: ${{ github.workspace }}/app/.cache/agent-distribution
+          SETPOINT_TEST_AGENT_DISTRIBUTION_VERSION: public-ci-${{ github.sha }}
+        run: go test -count=1 ./internal/bootstrap -run '^TestPackagedAgentDistribution$'
+      - name: Bootstrap secret evidence gate
+        run: go test -count=1 ./internal/integration -run '^TestAgentBootstrapV1RealEnrollmentSecretEvidenceAndSSHIndependence$'
+      - name: Test
+        run: go test -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Focused Operations/API race
+        run: go test -race -count=1 ./internal/api ./internal/app ./internal/agent ./internal/storage/sqlite ./internal/integration ./internal/operation/...
+
+  race:
+    name: Full Go race gate
+    needs: provenance
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Physical harness unit tests only
+        run: python3 -m unittest discover -s testing/harness -p 'test_*.py' -v
+      - name: Run race detector
+        run: go test -race -count=1 ./...

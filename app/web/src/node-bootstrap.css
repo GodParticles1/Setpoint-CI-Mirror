@@ -1,0 +1,36 @@
+.bootstrap-dialog { width: min(620px, 100%); }
+.bootstrap-steps { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.bootstrap-step { min-width: 0; padding: 8px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fafbfb; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.bootstrap-step > span { width: 21px; height: 21px; flex: 0 0 auto; border-radius: 999px; background: #e9edef; display: grid; place-items: center; font-size: 9px; font-weight: 700; }
+.bootstrap-step strong { min-width: 0; overflow-wrap: anywhere; }
+.bootstrap-step-done { color: var(--green); border-color: #bdd8cc; background: #f4faf7; }
+.bootstrap-step-done > span { color: var(--green); background: var(--green-bg); }
+.bootstrap-step-current, .bootstrap-step-active { color: var(--blue); border-color: #b6ccd9; background: #f4f8fa; }
+.bootstrap-step-current > span, .bootstrap-step-active > span { color: var(--blue); background: var(--blue-bg); }
+.bootstrap-form { display: grid; grid-template-columns: minmax(0, 1fr) 130px; gap: 12px; }
+.bootstrap-form .field:nth-child(3), .bootstrap-form .field:nth-child(4), .bootstrap-form .field:nth-child(5), .bootstrap-secret-note { grid-column: 1 / -1; }
+.bootstrap-secret-note { padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--blue-bg); display: flex; align-items: flex-start; gap: 8px; color: #3c5669; }
+.bootstrap-secret-note svg { flex: 0 0 auto; margin-top: 1px; }
+.bootstrap-secret-note p { margin: 0; font-size: 10px; line-height: 1.5; }
+.bootstrap-identity { display: grid; gap: 12px; }
+.bootstrap-fingerprint { padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #fafbfb; display: flex; align-items: flex-start; gap: 10px; }
+.bootstrap-fingerprint svg { color: var(--green); flex: 0 0 auto; }
+.bootstrap-fingerprint div { min-width: 0; display: grid; gap: 4px; }
+.bootstrap-fingerprint span { color: var(--muted); font-size: 9px; font-weight: 700; }
+.bootstrap-fingerprint code { overflow-wrap: anywhere; font-size: 11px; }
+.bootstrap-facts { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bootstrap-facts div { padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; }
+.bootstrap-facts dt { color: var(--muted); font-size: 9px; font-weight: 700; }
+.bootstrap-facts dd { margin: 3px 0 0; color: var(--ink); font-size: 11px; overflow-wrap: anywhere; }
+.bootstrap-confirm { padding: 11px 12px; border: 1px solid #c7d8df; border-radius: 6px; background: #f4f8fa; display: flex; align-items: flex-start; gap: 9px; color: #435962; font-size: 11px; line-height: 1.5; }
+.bootstrap-confirm input { margin-top: 2px; flex: 0 0 auto; }
+.bootstrap-progress { padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--blue-bg); display: flex; align-items: center; gap: 8px; color: #3c5669; font-size: 11px; }
+.bootstrap-actions { margin-top: 2px; }
+.empty-actions { margin-top: 12px; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.node-highlight td { background: #f1faf6; }
+
+@media (max-width: 560px) {
+  .bootstrap-steps { grid-template-columns: repeat(5, minmax(92px, 1fr)); overflow-x: auto; padding-bottom: 3px; }
+  .bootstrap-form, .bootstrap-facts { grid-template-columns: 1fr; }
+  .bootstrap-form .field, .bootstrap-form .field:nth-child(3), .bootstrap-form .field:nth-child(4), .bootstrap-form .field:nth-child(5), .bootstrap-secret-note { grid-column: auto; }
+}

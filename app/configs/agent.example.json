@@ -1,0 +1,15 @@
+{
+  "server_url": "http://127.0.0.1:8081",
+  "identity_path": "data/agent-id",
+  "credential_path": "data/agent-credential.json",
+  "task_journal_path": "data/task-journal.json",
+  "heartbeat_interval": "15s",
+  "task_poll_interval": "2s",
+  "command_timeout": "10s",
+  "request_timeout": "5s",
+  "retry_max_attempts": 5,
+  "retry_initial_delay": "500ms",
+  "retry_max_delay": "5s",
+  "reconnect_initial_delay": "1s",
+  "reconnect_max_delay": "30s"
+}

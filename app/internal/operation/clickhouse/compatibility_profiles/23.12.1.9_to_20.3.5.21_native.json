@@ -1,0 +1,34 @@
+{
+  "schema_version": "clickhouse.compatibility_evidence.v1",
+  "evidence_id": "physical_lab:cvtypes_2312_to_2003_20260812a",
+  "source_version": "23.12.1.9",
+  "target_version": "20.3.5.21",
+  "strategy": "native_stream",
+  "verified_types": [
+    "Array(UInt64)",
+    "Date",
+    "DateTime",
+    "Decimal(18,4)",
+    "Enum8('zero'=0,'one'=1)",
+    "FixedString(16)",
+    "Float32",
+    "Float64",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "LowCardinality(String)",
+    "Nullable(String)",
+    "String",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "UUID"
+  ],
+  "unsupported_type_families": [
+    "JSON",
+    "Map",
+    "Object"
+  ]
+}

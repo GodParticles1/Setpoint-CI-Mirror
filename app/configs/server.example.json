@@ -1,0 +1,10 @@
+{
+  "management_listen_address": "127.0.0.1:8080",
+  "agent_listen_address": "127.0.0.1:8081",
+  "database_path": "data/setpoint.db",
+  "offline_after": "45s",
+  "shutdown_timeout": "10s",
+  "read_header_timeout": "5s",
+  "idle_timeout": "60s",
+  "max_header_bytes": 1048576
+}
