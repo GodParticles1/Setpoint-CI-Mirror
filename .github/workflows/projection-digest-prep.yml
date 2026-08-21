@@ -4,12 +4,9 @@ on:
   push:
     branches:
       - ci/hotfix-67f3541-mirror-prep
-  pull_request:
-    branches:
-      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   digest:
@@ -18,10 +15,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Compute projected source digest
+          ref: ci/hotfix-67f3541-mirror-prep
+      - name: Compute and publish projected source digest
         shell: bash
         run: |
           set -euo pipefail
           actual="$(git ls-tree -r HEAD -- app .gitattributes | sha256sum | awk '{print $1}')"
-          echo "SOURCE_PROJECTION_GIT_TREE_SHA256=$actual"
-          echo "PUBLIC_CI_WORKFLOW_SHA256=$(sha256sum .github/workflows/public-ci.yml | awk '{print $1}')"
+          workflow="$(sha256sum .github/workflows/public-ci.yml | awk '{print $1}')"
+          printf 'SOURCE_PROJECTION_GIT_TREE_SHA256=%s\nPUBLIC_CI_WORKFLOW_SHA256=%s\n' "$actual" "$workflow" > .public-mirror/projection-digest.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .public-mirror/projection-digest.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'ci: publish checks hotfix projection digest'
+          git push origin HEAD:ci/hotfix-67f3541-mirror-prep
