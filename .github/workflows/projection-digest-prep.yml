@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ci/hotfix-67f3541-mirror-prep
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
