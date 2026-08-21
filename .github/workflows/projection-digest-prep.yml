@@ -1,0 +1,24 @@
+name: Projection Digest Prep
+
+on:
+  push:
+    branches:
+      - ci/hotfix-67f3541-mirror-prep
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute projected source digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git ls-tree -r HEAD -- app .gitattributes | sha256sum | awk '{print $1}')"
+          echo "SOURCE_PROJECTION_GIT_TREE_SHA256=$actual"
+          echo "PUBLIC_CI_WORKFLOW_SHA256=$(sha256sum .github/workflows/public-ci.yml | awk '{print $1}')"
