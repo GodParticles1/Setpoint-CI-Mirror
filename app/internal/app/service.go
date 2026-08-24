@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"setpoint/internal/domain"
+	"setpoint/internal/operation"
 	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
 )
@@ -20,6 +21,10 @@ type NodeRepository interface {
 	RecordHeartbeat(context.Context, string, time.Time) error
 	ListNodes(context.Context, time.Duration) ([]domain.Node, error)
 	GetNode(context.Context, string, time.Duration) (domain.Node, error)
+}
+
+type OperationLeaseAuthority interface {
+	CurrentLeaseByOwner(context.Context, string) (operation.LockLease, bool, error)
 }
 
 type CheckRepository interface {
@@ -37,11 +42,12 @@ type CheckCatalog interface {
 }
 
 type Service struct {
-	nodes        NodeRepository
-	checkStore   CheckRepository
-	checks       CheckCatalog
-	offlineAfter time.Duration
-	now          func() time.Time
+	nodes          NodeRepository
+	checkStore     CheckRepository
+	checks         CheckCatalog
+	leaseAuthority OperationLeaseAuthority
+	offlineAfter   time.Duration
+	now            func() time.Time
 }
 
 func NewService(nodes NodeRepository, checkStore CheckRepository, checks CheckCatalog, offlineAfter time.Duration) (*Service, error) {
@@ -55,6 +61,18 @@ func NewService(nodes NodeRepository, checkStore CheckRepository, checks CheckCa
 		nodes: nodes, checkStore: checkStore, checks: checks,
 		offlineAfter: offlineAfter, now: time.Now,
 	}, nil
+}
+
+func NewServiceWithOperationLeaseAuthority(nodes NodeRepository, checkStore CheckRepository, checks CheckCatalog, offlineAfter time.Duration, authority OperationLeaseAuthority) (*Service, error) {
+	if authority == nil {
+		return nil, errors.New("operation lease authority is required")
+	}
+	service, err := NewService(nodes, checkStore, checks, offlineAfter)
+	if err != nil {
+		return nil, err
+	}
+	service.leaseAuthority = authority
+	return service, nil
 }
 
 func (service *Service) SyncChecks(ctx context.Context) error {

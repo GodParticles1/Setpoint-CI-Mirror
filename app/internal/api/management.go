@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"setpoint/internal/checkrun"
 	"setpoint/internal/protocol"
 )
 
@@ -81,7 +82,7 @@ func (handler *Handler) createCheckRun(writer http.ResponseWriter, request *http
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(writer, status, run)
+	writeJSON(writer, status, decorateCheckRun(run))
 }
 
 func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.Request) {
@@ -94,6 +95,9 @@ func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.
 		handler.handleServiceError(writer, err)
 		return
 	}
+	for index := range runs {
+		runs[index] = decorateCheckRun(runs[index])
+	}
 	writeJSON(writer, http.StatusOK, protocol.CheckRunListResponse{
 		Runs: runs, Limit: normalized.Limit, Offset: normalized.Offset,
 	})
@@ -105,7 +109,12 @@ func (handler *Handler) getCheckRun(writer http.ResponseWriter, request *http.Re
 		handler.handleServiceError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, run)
+	writeJSON(writer, http.StatusOK, decorateCheckRun(run))
+}
+
+func decorateCheckRun(run checkrun.Resource) checkrun.Resource {
+	run.RemediationOffers = checkrun.BuildRemediationOffers(run)
+	return run
 }
 
 func (handler *Handler) cancelCheckRun(writer http.ResponseWriter, request *http.Request) {
@@ -114,6 +123,7 @@ func (handler *Handler) cancelCheckRun(writer http.ResponseWriter, request *http
 		handler.handleServiceError(writer, err)
 		return
 	}
+	response.Run = decorateCheckRun(response.Run)
 	writeJSON(writer, http.StatusOK, response)
 }
 

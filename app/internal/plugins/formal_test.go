@@ -7,6 +7,7 @@ import (
 
 	"setpoint/internal/operation"
 	"setpoint/internal/plugin"
+	"setpoint/internal/plugins/clickhousechecks"
 )
 
 func TestFormalCatalogContainsOnlyExecutableReadOnlyChecks(t *testing.T) {
@@ -15,7 +16,7 @@ func TestFormalCatalogContainsOnlyExecutableReadOnlyChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata := registry.List()
-	if len(metadata) != 8 {
+	if len(metadata) != 9 {
 		t.Fatalf("formal check count=%d", len(metadata))
 	}
 	checkItems := 0
@@ -30,13 +31,13 @@ func TestFormalCatalogContainsOnlyExecutableReadOnlyChecks(t *testing.T) {
 		}
 		checkItems += len(current.Checks)
 	}
-	if checkItems != 71 {
-		t.Fatalf("formal check items=%d, want 71", checkItems)
+	if checkItems != 84 {
+		t.Fatalf("formal check items=%d, want 84", checkItems)
 	}
-	if len(registry.ListBundles()) != 8 {
+	if len(registry.ListBundles()) != 9 {
 		t.Fatalf("formal bundles=%#v", registry.ListBundles())
 	}
-	if len(registry.ListPolicies()) != 7 {
+	if len(registry.ListPolicies()) != 8 {
 		t.Fatalf("formal policies=%#v", registry.ListPolicies())
 	}
 }
@@ -46,19 +47,16 @@ func TestRC1FormalCatalogIsCompleteAndReferenceSafe(t *testing.T) {
 	if err := RegisterFormal(registry); err != nil {
 		t.Fatal(err)
 	}
-
 	plugins := registry.List()
 	definitions := registry.ListDefinitions()
 	bundles := registry.ListBundles()
 	policies := registry.ListPolicies()
-	if len(plugins) != 8 || len(definitions) != 71 || len(bundles) != 8 || len(policies) != 7 {
-		t.Fatalf("formal catalog=%d plugins/%d checks/%d bundles/%d policies, want 8/71/8/7",
-			len(plugins), len(definitions), len(bundles), len(policies))
+	if len(plugins) != 9 || len(definitions) != 84 || len(bundles) != 9 || len(policies) != 8 {
+		t.Fatalf("formal catalog=%d plugins/%d checks/%d bundles/%d policies, want 9/84/9/8", len(plugins), len(definitions), len(bundles), len(policies))
 	}
 	if formalOperations := operation.NewRegistry().List(); len(formalOperations) != 0 {
 		t.Fatalf("formal operation definitions=%#v, want empty", formalOperations)
 	}
-
 	pluginIDs := make(map[string]struct{}, len(plugins))
 	for _, metadata := range plugins {
 		if _, duplicate := pluginIDs[metadata.ID]; duplicate {
@@ -69,15 +67,13 @@ func TestRC1FormalCatalogIsCompleteAndReferenceSafe(t *testing.T) {
 			t.Fatalf("owning plugin is not versioned and executable: %#v", metadata)
 		}
 	}
-
 	checkIDs := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
 		if _, duplicate := checkIDs[definition.ID]; duplicate {
 			t.Fatalf("duplicate check ID %q", definition.ID)
 		}
 		checkIDs[definition.ID] = struct{}{}
-		if strings.TrimSpace(definition.PluginID) == "" || strings.TrimSpace(definition.PluginVersion) == "" ||
-			len(definition.SourceRefs) == 0 {
+		if strings.TrimSpace(definition.PluginID) == "" || strings.TrimSpace(definition.PluginVersion) == "" || len(definition.SourceRefs) == 0 {
 			t.Fatalf("check has incomplete owner, version, or SourceRef: %#v", definition)
 		}
 		owner, exists := registry.Get(definition.PluginID)
@@ -86,7 +82,6 @@ func TestRC1FormalCatalogIsCompleteAndReferenceSafe(t *testing.T) {
 		}
 		assertUniqueNonEmpty(t, "check "+definition.ID+" SourceRef", definition.SourceRefs)
 	}
-
 	bundleIDs := make(map[string]struct{}, len(bundles))
 	for _, bundle := range bundles {
 		if _, duplicate := bundleIDs[bundle.ID]; duplicate {
@@ -104,7 +99,6 @@ func TestRC1FormalCatalogIsCompleteAndReferenceSafe(t *testing.T) {
 			t.Fatalf("bundle %s resolution=%#v err=%v", bundle.ID, resolved, err)
 		}
 	}
-
 	policyIDs := make(map[string]struct{}, len(policies))
 	for _, policy := range policies {
 		if _, duplicate := policyIDs[policy.ID]; duplicate {
@@ -127,6 +121,20 @@ func TestRC1FormalCatalogIsCompleteAndReferenceSafe(t *testing.T) {
 		if err != nil || len(resolved.CheckIDs) == 0 {
 			t.Fatalf("policy %s resolution=%#v err=%v", policy.ID, resolved, err)
 		}
+	}
+}
+
+func TestClickHouseReadinessPolicyExpandsWholeBundle(t *testing.T) {
+	registry := plugin.NewCheckRegistry()
+	if err := RegisterFormal(registry); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := registry.ResolveSelection(nil, nil, []string{"policy.clickhouse-migration-readiness"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved.Groups) != 1 || resolved.Groups[0].PluginID != clickhousechecks.ID || len(resolved.CheckIDs) != 13 {
+		t.Fatalf("ClickHouse readiness resolution=%#v", resolved)
 	}
 }
 
@@ -154,19 +162,9 @@ func TestM2Batch3PolicyExpandsOnlyItsEightChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantGroups := []plugin.ResolvedCheckGroup{
-		{PluginID: "linux.network.icmp_redirects", CheckIDs: []string{
-			"net.ipv4.conf.all.accept_redirects.persisted",
-			"net.ipv4.conf.all.send_redirects.persisted",
-			"net.ipv4.conf.default.accept_redirects.persisted",
-			"net.ipv4.conf.default.send_redirects.persisted",
-		}},
-		{PluginID: "linux.network.source_route", CheckIDs: []string{
-			"net.ipv4.conf.all.accept_source_route.persisted",
-			"net.ipv4.conf.default.accept_source_route.persisted",
-		}},
-		{PluginID: "ssh.baseline.core", CheckIDs: []string{
-			"ssh.listener.configured_ports_active", "ssh.listener.unexpected_ports",
-		}},
+		{PluginID: "linux.network.icmp_redirects", CheckIDs: []string{"net.ipv4.conf.all.accept_redirects.persisted", "net.ipv4.conf.all.send_redirects.persisted", "net.ipv4.conf.default.accept_redirects.persisted", "net.ipv4.conf.default.send_redirects.persisted"}},
+		{PluginID: "linux.network.source_route", CheckIDs: []string{"net.ipv4.conf.all.accept_source_route.persisted", "net.ipv4.conf.default.accept_source_route.persisted"}},
+		{PluginID: "ssh.baseline.core", CheckIDs: []string{"ssh.listener.configured_ports_active", "ssh.listener.unexpected_ports"}},
 	}
 	if len(resolved.CheckIDs) != 8 || !reflect.DeepEqual(resolved.Groups, wantGroups) {
 		t.Fatalf("M2 batch 3 resolution=%#v", resolved)
@@ -184,11 +182,7 @@ func TestM2Batch2PolicyExpandsOnlyItsEightChecks(t *testing.T) {
 	}
 	wantGroups := []plugin.ResolvedCheckGroup{
 		{PluginID: "linux.baseline.core", CheckIDs: []string{"login.motd"}},
-		{PluginID: "nginx.baseline.core", CheckIDs: []string{
-			"nginx.cors.allow_origin", "nginx.error_page_404", "nginx.header.referrer_policy",
-			"nginx.header.x_content_type_options", "nginx.header.x_frame_options",
-			"nginx.header.x_xss_protection", "nginx.location_alias_boundary",
-		}},
+		{PluginID: "nginx.baseline.core", CheckIDs: []string{"nginx.cors.allow_origin", "nginx.error_page_404", "nginx.header.referrer_policy", "nginx.header.x_content_type_options", "nginx.header.x_frame_options", "nginx.header.x_xss_protection", "nginx.location_alias_boundary"}},
 	}
 	if len(resolved.CheckIDs) != 8 || !reflect.DeepEqual(resolved.Groups, wantGroups) {
 		t.Fatalf("M2 batch 2 resolution=%#v", resolved)
@@ -205,18 +199,9 @@ func TestM2Batch1PolicyExpandsOnlyItsFifteenChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantGroups := []plugin.ResolvedCheckGroup{
-		{PluginID: "linux.files.permissions", CheckIDs: []string{
-			"permissions.cron_spool", "permissions.group", "permissions.gshadow", "permissions.login_defs",
-			"permissions.security_directory", "permissions.services", "permissions.wtmp",
-		}},
-		{PluginID: "linux.network.source_route", CheckIDs: []string{
-			"net.ipv4.conf.all.accept_source_route", "net.ipv4.conf.default.accept_source_route",
-		}},
-		{PluginID: "linux.password.policy", CheckIDs: []string{
-			"password.pwquality.digit_credit", "password.pwquality.lowercase_credit",
-			"password.pwquality.min_length", "password.pwquality.other_credit",
-			"password.pwquality.uppercase_credit", "password.warn_days",
-		}},
+		{PluginID: "linux.files.permissions", CheckIDs: []string{"permissions.cron_spool", "permissions.group", "permissions.gshadow", "permissions.login_defs", "permissions.security_directory", "permissions.services", "permissions.wtmp"}},
+		{PluginID: "linux.network.source_route", CheckIDs: []string{"net.ipv4.conf.all.accept_source_route", "net.ipv4.conf.default.accept_source_route"}},
+		{PluginID: "linux.password.policy", CheckIDs: []string{"password.pwquality.digit_credit", "password.pwquality.lowercase_credit", "password.pwquality.min_length", "password.pwquality.other_credit", "password.pwquality.uppercase_credit", "password.warn_days"}},
 	}
 	if len(resolved.CheckIDs) != 15 || !reflect.DeepEqual(resolved.Groups, wantGroups) {
 		t.Fatalf("M2 batch 1 resolution=%#v", resolved)

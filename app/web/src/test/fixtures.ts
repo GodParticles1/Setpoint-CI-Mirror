@@ -1,4 +1,4 @@
-import type { CheckItem, CheckRun, GranularCheckDefinition, Node, OperationDefinition, OperationRun, Site } from '../api/types'
+import type { CheckItem, CheckRun, GranularCheckDefinition, Node, OperationDefinition, OperationRun, RemediationOffer, Site } from '../api/types'
 
 export const nodeFixture: Node = {
   id: 'node-1', hostname: 'node-one', os: 'linux', os_version: 'test', arch: 'amd64', agent_version: 'test',
@@ -18,7 +18,7 @@ export const siteFixture: Site = {
   created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
 }
 
-export function runFixture(phase: CheckRun['status']['phase'] = 'running', items: CheckItem[] = []): CheckRun {
+export function runFixture(phase: CheckRun['status']['phase'] = 'running', items: CheckItem[] = [], offers: RemediationOffer[] = []): CheckRun {
   const terminal = phase === 'completed' || phase === 'partial_failed' || phase === 'canceled'
   return {
     api_version: 'setpoint.io/v1', kind: 'ReadOnlyCheckRun',
@@ -47,6 +47,7 @@ export function runFixture(phase: CheckRun['status']['phase'] = 'running', items
         started_at: '2026-08-05T00:00:30Z', completed_at: '2026-08-05T00:01:00Z', items,
       },
     }] : [],
+    remediation_offers: offers,
   }
 }
 
@@ -59,6 +60,20 @@ export function itemFixture(status: CheckItem['status']): CheckItem {
     requires_restart: false, may_affect_connection: false, may_affect_business: false,
     executed_at: '2026-08-05T00:01:00Z',
     error: status === 'error' ? { code: 'test_error', message: 'test failure' } : undefined,
+  }
+}
+
+export function remediationOfferFixture(overrides: Partial<RemediationOffer> = {}): RemediationOffer {
+  return {
+    check_run_id: 'run-1', task_id: 'task-1', check_id: 'net.ipv4.conf.all.accept_redirects.persisted', node_id: 'node-1',
+    current_value: 'runtime=1; persisted=0', existing_recommended_value: 'runtime=0; persisted=0',
+    recommended_value_for_this_run: 'runtime=0; persisted=0', recommendation_reason: '运行时值偏离已验证的持久化安全值。',
+    availability: 'actionable', editable: false, parameter_type: 'string', constraints: { options: ['runtime=0; persisted=0'] },
+    supports_automatic_fix: true, supports_rollback: true, risk: 'low', requires_restart: false,
+    may_affect_connection: false, may_affect_business: false,
+    operation_id: 'linux.network.icmp_redirects.runtime_repair',
+    operation_parameters: { check_id: 'net.ipv4.conf.all.accept_redirects.persisted', target_value: 'runtime=0; persisted=0' },
+    ...overrides,
   }
 }
 
@@ -102,4 +117,53 @@ export function operationRunFixture(state: OperationRun['status']['state'] = 'aw
     impact: { summary: '目标端会写入数据', risk: 'high', changes: [], requires_downtime: false, requires_write_fence: true, estimated_duration: 1_000_000_000, estimated_data_change_bytes: 1024 },
     plan_digest: `sha256:${'b'.repeat(64)}`,
   }
+}
+
+export function repairOperationRunFixture(state: OperationRun['status']['state'] = 'awaiting_confirmation'): OperationRun {
+  const run = operationRunFixture(state)
+  run.spec = {
+    ...run.spec,
+    operation_id: 'linux.network.icmp_redirects.runtime_repair',
+    node_id: 'node-1',
+    targets: [{ kind: 'node', node_id: 'node-1' }],
+    parameters: { check_id: 'net.ipv4.conf.all.accept_redirects.persisted', target_value: 'runtime=0; persisted=0' },
+  }
+  run.plan = {
+    schema_version: 'setpoint.sysctl_runtime_repair.plan.v1', summary: '将已验证持久化为 0 的 ICMP Redirect 运行时值修复为 0',
+    execution: { schema_version: 'setpoint.sysctl_runtime_repair.plan.v1', payload: {} },
+    steps: [{ id: 'apply-runtime', name: '修复运行时 sysctl', target: { kind: 'node', node_id: 'node-1' }, action: 'set-runtime', checkpoint: 'runtime_repaired', writes: true, retry_safe: false, rollback_action: 'restore-runtime' }],
+  }
+  run.impact = { summary: '仅修改一个运行时 sysctl；持久化配置不变', risk: 'low', changes: [], requires_downtime: false, requires_write_fence: false, estimated_duration: 1_000_000_000, estimated_data_change_bytes: 0 }
+  run.status = { ...run.status, state, checkpoint: repairCheckpoint(state), apply_available: state !== 'draft' }
+  if (state === 'creating_restore_point') {
+    run.execution = { restore_point: { id: 'restore-1', provider_id: 'sysctl', operation_id: run.spec.operation_id, run_id: run.metadata.id, status: 'verified', targets: run.spec.targets, created_at: '2026-08-13T00:02:00Z', manifest: { schema_version: 'v1', payload: {} } } }
+  }
+  if (state === 'running' || state === 'verifying' || state === 'succeeded') {
+    run.execution = { restore_point: { id: 'restore-1', provider_id: 'sysctl', operation_id: run.spec.operation_id, run_id: run.metadata.id, status: 'verified', targets: run.spec.targets, created_at: '2026-08-13T00:02:00Z', manifest: { schema_version: 'v1', payload: {} } }, apply: { changed: true, checkpoint: 'runtime_repaired', state: { schema_version: 'v1', payload: {} } } }
+  }
+  if (state === 'succeeded') run.execution!.verification = { passed: true, summary: '运行时值已验证为 0' }
+  if (state === 'rolling_back' || state === 'rolled_back' || state === 'rollback_failed') {
+    run.execution = {
+      restore_point: { id: 'restore-1', provider_id: 'sysctl', operation_id: run.spec.operation_id, run_id: run.metadata.id, status: 'verified', targets: run.spec.targets, created_at: '2026-08-13T00:02:00Z', manifest: { schema_version: 'v1', payload: {} } },
+      apply: { changed: true, checkpoint: 'runtime_repaired', state: { schema_version: 'v1', payload: {} } },
+      rollback: { restored: state !== 'rollback_failed', checkpoint: 'runtime_restored', state: { schema_version: 'v1', payload: {} } },
+    }
+  }
+  if (state === 'rolled_back') run.execution!.rollback_verification = { passed: true, summary: '原运行时值已恢复并验证' }
+  if (state === 'interrupted') run.status.recovery = { code: 'apply_outcome_uncertain', checkpoint: 'action_apply_failed', safe_next_action: 'reconcile_before_retry_or_rollback', manual_review: true }
+  if (state === 'rollback_failed') run.status.recovery = { code: 'rollback_failed', checkpoint: 'rollback_failed', safe_next_action: 'manual_recovery', manual_review: true }
+  return run
+}
+
+function repairCheckpoint(state: OperationRun['status']['state']) {
+  if (state === 'awaiting_confirmation') return 'plan_ready'
+  if (state === 'creating_restore_point') return 'create_restore_point_queued'
+  if (state === 'running') return 'apply_queued'
+  if (state === 'verifying') return 'verify_queued'
+  if (state === 'rolling_back') return 'rollback_queued'
+  if (state === 'rolled_back') return 'rollback_verified'
+  if (state === 'succeeded') return 'verified'
+  if (state === 'interrupted') return 'apply_outcome_requires_reconcile'
+  if (state === 'rollback_failed') return 'rollback_failed'
+  return state
 }

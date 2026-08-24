@@ -138,6 +138,34 @@ func (store *Store) Release(ctx context.Context, lease operation.LockLease) erro
 	return nil
 }
 
+func (store *Store) CurrentLeaseByOwner(ctx context.Context, ownerID string) (operation.LockLease, bool, error) {
+	if ownerID == "" {
+		return operation.LockLease{}, false, errors.New("lock owner is required")
+	}
+	now := store.now().UTC()
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return operation.LockLease{}, false, fmt.Errorf("begin authoritative operation lease read: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+	if err := purgeExpiredOperationLeases(ctx, transaction, now); err != nil {
+		return operation.LockLease{}, false, err
+	}
+	lease, found, err := readOperationLeaseByOwner(ctx, transaction, ownerID)
+	if err != nil {
+		return operation.LockLease{}, false, err
+	}
+	if found {
+		if err := operation.ValidateLease(lease, now); err != nil {
+			return operation.LockLease{}, false, err
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return operation.LockLease{}, false, fmt.Errorf("commit authoritative operation lease read: %w", err)
+	}
+	return lease, found, nil
+}
+
 func purgeExpiredOperationLeases(ctx context.Context, transaction *sql.Tx, now time.Time) error {
 	rows, err := transaction.QueryContext(ctx, `SELECT id, expires_at FROM operation_leases`)
 	if err != nil {

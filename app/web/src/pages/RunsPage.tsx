@@ -31,6 +31,8 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   if (resource.loading && !resource.data) return <Loading label="正在读取可执行检查" />
   if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.refresh} />
   const { nodes, definitions, bundles, policies, runs } = resource.data!
+  const onlineNodeIDs = nodes.filter((node) => node.status === 'online').map((node) => node.id)
+  const checkIDs = definitions.map((definition) => definition.id)
   const resolvedCheckIDs = resolveCheckIDs(definitions, bundles, policies, selection)
   const selectedCapabilityCount = selection.checkIds.length + selection.bundleIds.length + selection.policyIds.length
   const pluginCount = new Set(definitions.filter((definition) => resolvedCheckIDs.includes(definition.id)).map((definition) => definition.plugin_id)).size
@@ -60,7 +62,10 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
     <section className="run-composer">
       <div className="composer-main">
         <label className="field"><span>批次名称</span><input value={name} maxLength={200} onChange={(event) => setName(event.target.value)} /></label>
-        <Selection title="节点" count={selectedNodes.length}>
+        <Selection title="节点" count={selectedNodes.length} actions={<>
+          <Button className="button-quiet" disabled={onlineNodeIDs.length === 0 || onlineNodeIDs.every((id) => selectedNodes.includes(id))} onClick={() => setSelectedNodes(onlineNodeIDs)}>全选在线节点</Button>
+          <Button className="button-quiet" disabled={selectedNodes.length === 0} onClick={() => setSelectedNodes([])}>清空</Button>
+        </>}>
           {nodes.length === 0 ? <EmptyState>暂无已登记节点</EmptyState> : nodes.map((node) => <SelectRow key={node.id} selected={selectedNodes.includes(node.id)} disabled={node.status !== 'online'} onClick={() => setSelectedNodes(toggle(selectedNodes, node.id))}>
             <div><strong>{node.hostname}</strong><small>{node.site_name || '未分配站点'} · {node.os} {node.os_version}</small></div><span className={`node-state node-${node.status}`}>{node.status === 'online' ? '在线' : '离线'}</span>
           </SelectRow>)}
@@ -71,7 +76,10 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
             <button type="button" className={mode === 'bundles' ? 'active' : ''} onClick={() => setMode('bundles')}>集合 {selection.bundleIds.length}</button>
             <button type="button" className={mode === 'policies' ? 'active' : ''} onClick={() => setMode('policies')}>策略 {selection.policyIds.length}</button>
           </div>
-          {mode === 'checks' && <Selection title="独立检查项" count={selection.checkIds.length}>{definitions.map((definition) => <SelectRow key={definition.id} selected={selection.checkIds.includes(definition.id)} onClick={() => setSelection({ ...selection, checkIds: toggle(selection.checkIds, definition.id) })}><div><strong>{definition.name}</strong><small>{definition.category} · {definition.id}</small></div><span className="muted">{riskLabel(definition.risk)}</span></SelectRow>)}</Selection>}
+          {mode === 'checks' && <Selection title="独立检查项" count={selection.checkIds.length} actions={<>
+            <Button className="button-quiet" disabled={checkIDs.length === 0 || checkIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: checkIDs })}>全选</Button>
+            <Button className="button-quiet" disabled={selection.checkIds.length === 0} onClick={() => setSelection({ ...selection, checkIds: [] })}>清空</Button>
+          </>}>{definitions.map((definition) => <SelectRow key={definition.id} selected={selection.checkIds.includes(definition.id)} onClick={() => setSelection({ ...selection, checkIds: toggle(selection.checkIds, definition.id) })}><div><strong>{definition.name}</strong><small>{definition.category} · {definition.id}</small></div><span className="muted">{riskLabel(definition.risk)}</span></SelectRow>)}</Selection>}
           {mode === 'bundles' && <Selection title="检查集合" count={selection.bundleIds.length}>{bundles.map((bundle) => <SelectRow key={bundle.id} selected={selection.bundleIds.includes(bundle.id)} onClick={() => setSelection({ ...selection, bundleIds: toggle(selection.bundleIds, bundle.id) })}><div><strong>{bundle.name}</strong><small>{bundle.category} · {bundle.check_ids.length} 个检查项</small></div><span className="muted">集合</span></SelectRow>)}</Selection>}
           {mode === 'policies' && <Selection title="检查策略" count={selection.policyIds.length}>{policies.map((policy) => <SelectRow key={policy.id} selected={selection.policyIds.includes(policy.id)} onClick={() => setSelection({ ...selection, policyIds: toggle(selection.policyIds, policy.id) })}><div><strong>{policy.name}</strong><small>{policy.description}</small></div><span className="muted">策略</span></SelectRow>)}</Selection>}
         </div>
@@ -86,8 +94,8 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   </>
 }
 
-function Selection({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
-  return <fieldset className="selection"><legend>{title}<span>{count} 已选</span></legend><div className="selection-list">{children}</div></fieldset>
+function Selection({ title, count, actions, children }: { title: string; count: number; actions?: React.ReactNode; children: React.ReactNode }) {
+  return <fieldset className="selection"><legend>{title}<span>{count} 已选</span></legend>{actions && <div className="selection-actions">{actions}</div>}<div className="selection-list">{children}</div></fieldset>
 }
 
 function SelectRow({ selected, disabled = false, onClick, children }: { selected: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {

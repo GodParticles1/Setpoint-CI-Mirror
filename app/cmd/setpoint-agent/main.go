@@ -17,6 +17,7 @@ import (
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
+	"setpoint/internal/operation/sysctlrepair"
 	"setpoint/internal/plugin"
 	"setpoint/internal/plugins"
 	"setpoint/internal/protocol"
@@ -86,16 +87,39 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	sysctlDefinition, err := sysctlrepair.NewDefinition(commandExecutor)
+	if err != nil {
+		return err
+	}
 	operationRegistry := operation.NewRegistry()
 	if err := operationRegistry.Register(planningDefinition); err != nil {
+		return err
+	}
+	if err := operationRegistry.Register(sysctlDefinition); err != nil {
+		return err
+	}
+	restoreProvider, err := sysctlrepair.NewRestoreProvider(commandExecutor)
+	if err != nil {
+		return err
+	}
+	authority, err := agent.NewClientOperationAuthority(client, agentID)
+	if err != nil {
+		return err
+	}
+	factory, err := sysctlrepair.NewDefinitionFactory(sysctlDefinition)
+	if err != nil {
+		return err
+	}
+	executionRunner, err := agent.NewOperationExecutionRunnerWithAuthority(operationRegistry, restoreProvider, commandExecutor, runtime.GOOS, authority, factory)
+	if err != nil {
 		return err
 	}
 	journal, err := agent.NewTaskJournal(config.TaskJournalPath)
 	if err != nil {
 		return err
 	}
-	taskWorker, err := agent.NewTaskWorkerWithOperations(
-		client, agentID, runtime.GOOS, registry, operationRegistry, commandExecutor, journal, config.CommandTimeout)
+	taskWorker, err := agent.NewTaskWorkerWithControlledOperations(
+		client, agentID, runtime.GOOS, registry, operationRegistry, executionRunner, commandExecutor, journal, config.CommandTimeout)
 	if err != nil {
 		return err
 	}

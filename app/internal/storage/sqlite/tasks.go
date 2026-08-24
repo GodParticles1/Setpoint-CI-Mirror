@@ -268,6 +268,14 @@ func (store *Store) CompleteTask(
 	if resource.Status.Phase != task.PhaseClaimed && resource.Status.Phase != task.PhaseRunning && resource.Status.Phase != task.PhaseCancelRequested {
 		return task.Resource{}, fmt.Errorf("%w: cannot complete task in phase %s", task.ErrInvalidTransition, resource.Status.Phase)
 	}
+	var executionCompletion *preparedOperationExecutionResult
+	if submission.OperationExecutionResult != nil {
+		prepared, err := prepareOperationExecutionResultTx(ctx, transaction, resource, submission, reportedAt)
+		if err != nil {
+			return task.Resource{}, err
+		}
+		executionCompletion = &prepared
+	}
 	var errorCode, errorMessage any
 	if failure != nil {
 		errorCode = failure.Code
@@ -289,6 +297,21 @@ func (store *Store) CompleteTask(
 	}
 	if submission.OperationResult != nil {
 		if err := applyOperationPlanningResultTx(ctx, transaction, taskID, *submission.OperationResult, reportedAt); err != nil {
+			return task.Resource{}, err
+		}
+	}
+	if executionCompletion != nil {
+		if _, err := saveOperationExecutionCheckpointTx(
+			ctx,
+			transaction,
+			executionCompletion.runID,
+			executionCompletion.state,
+			executionCompletion.checkpoint,
+			executionCompletion.snapshot,
+			nil,
+			executionCompletion.journal,
+			reportedAt,
+		); err != nil {
 			return task.Resource{}, err
 		}
 	}
@@ -346,14 +369,28 @@ func scanTask(source scanner) (task.Resource, error) {
 	resource.Spec.PluginID = pluginID.String
 	resource.Spec.ContractDigest = contractDigest
 	if executionContract != "" {
-		var contract task.CheckExecutionContract
-		if err := json.Unmarshal([]byte(executionContract), &contract); err != nil {
-			return task.Resource{}, fmt.Errorf("decode task execution contract: %w", err)
+		switch resource.Kind {
+		case task.KindReadOnlyCheckTask:
+			var contract task.CheckExecutionContract
+			if err := json.Unmarshal([]byte(executionContract), &contract); err != nil {
+				return task.Resource{}, fmt.Errorf("decode task execution contract: %w", err)
+			}
+			if err := task.ValidateCheckExecutionContract(contract, contractDigest); err != nil {
+				return task.Resource{}, fmt.Errorf("validate task execution contract: %w", err)
+			}
+			resource.Spec.Execution = &contract
+		case task.KindOperationExecutionTask:
+			var contract task.OperationExecutionContract
+			if err := json.Unmarshal([]byte(executionContract), &contract); err != nil {
+				return task.Resource{}, fmt.Errorf("decode operation execution contract: %w", err)
+			}
+			if err := task.ValidateOperationExecutionContract(contract, contractDigest); err != nil {
+				return task.Resource{}, fmt.Errorf("validate operation execution contract: %w", err)
+			}
+			resource.Spec.OperationExecution = &contract
+		default:
+			return task.Resource{}, fmt.Errorf("execution contract is not supported for task kind %q", resource.Kind)
 		}
-		if err := task.ValidateCheckExecutionContract(contract, contractDigest); err != nil {
-			return task.Resource{}, fmt.Errorf("validate task execution contract: %w", err)
-		}
-		resource.Spec.Execution = &contract
 	}
 	if err := json.Unmarshal([]byte(targets), &resource.Spec.Targets); err != nil {
 		return task.Resource{}, fmt.Errorf("decode task targets: %w", err)
@@ -425,6 +462,12 @@ func loadTaskResult(ctx context.Context, source taskResultQueryer, resource *tas
 			return fmt.Errorf("decode operation planning task result: %w", err)
 		}
 		resource.OperationResult = &result
+	case task.KindOperationExecutionTask:
+		var result task.OperationExecutionResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return fmt.Errorf("decode operation execution task result: %w", err)
+		}
+		resource.OperationExecutionResult = &result
 	default:
 		return fmt.Errorf("decode result for unsupported task kind %q", resource.Kind)
 	}
@@ -478,18 +521,31 @@ func insertTask(ctx context.Context, transaction *sql.Tx, resource task.Resource
 }
 
 func encodeTaskExecution(spec task.Spec) (string, string, error) {
-	if spec.Execution == nil {
+	if spec.Execution != nil && spec.OperationExecution != nil {
+		return "", "", errors.New("task cannot contain both check and operation execution contracts")
+	}
+	if spec.Execution == nil && spec.OperationExecution == nil {
 		if spec.ContractDigest != "" {
 			return "", "", errors.New("task contract digest requires an execution contract")
 		}
 		return "", "", nil
 	}
-	if err := task.ValidateCheckExecutionContract(*spec.Execution, spec.ContractDigest); err != nil {
-		return "", "", fmt.Errorf("validate task execution contract: %w", err)
+	if spec.Execution != nil {
+		if err := task.ValidateCheckExecutionContract(*spec.Execution, spec.ContractDigest); err != nil {
+			return "", "", fmt.Errorf("validate task execution contract: %w", err)
+		}
+		encoded, err := json.Marshal(spec.Execution)
+		if err != nil {
+			return "", "", fmt.Errorf("encode task execution contract: %w", err)
+		}
+		return string(encoded), spec.ContractDigest, nil
 	}
-	encoded, err := json.Marshal(spec.Execution)
+	if err := task.ValidateOperationExecutionContract(*spec.OperationExecution, spec.ContractDigest); err != nil {
+		return "", "", fmt.Errorf("validate operation execution contract: %w", err)
+	}
+	encoded, err := json.Marshal(spec.OperationExecution)
 	if err != nil {
-		return "", "", fmt.Errorf("encode task execution contract: %w", err)
+		return "", "", fmt.Errorf("encode operation execution contract: %w", err)
 	}
 	return string(encoded), spec.ContractDigest, nil
 }
@@ -497,13 +553,13 @@ func encodeTaskExecution(spec task.Spec) (string, string, error) {
 func encodeTaskSubmission(resource task.Resource, submission task.ResultSubmission) ([]byte, *task.Failure, error) {
 	switch resource.Kind {
 	case task.KindReadOnlyCheckTask:
-		if submission.Result == nil || submission.OperationResult != nil {
+		if submission.Result == nil || submission.OperationResult != nil || submission.OperationExecutionResult != nil {
 			return nil, nil, errors.New("check task requires exactly one check result")
 		}
 		encoded, err := json.Marshal(submission.Result)
 		return encoded, submission.Result.Error, err
 	case task.KindOperationPlanningTask:
-		if submission.OperationResult == nil || submission.Result != nil {
+		if submission.OperationResult == nil || submission.Result != nil || submission.OperationExecutionResult != nil {
 			return nil, nil, errors.New("operation planning task requires exactly one operation result")
 		}
 		encoded, err := json.Marshal(submission.OperationResult)
@@ -512,6 +568,12 @@ func encodeTaskSubmission(resource task.Resource, submission task.ResultSubmissi
 			failure = &task.Failure{Code: submission.OperationResult.Error.Code, Message: submission.OperationResult.Error.Message}
 		}
 		return encoded, failure, err
+	case task.KindOperationExecutionTask:
+		if submission.OperationExecutionResult == nil || submission.Result != nil || submission.OperationResult != nil {
+			return nil, nil, errors.New("operation execution task requires exactly one operation execution result")
+		}
+		encoded, err := json.Marshal(submission.OperationExecutionResult)
+		return encoded, submission.OperationExecutionResult.Error, err
 	default:
 		return nil, nil, fmt.Errorf("unsupported task kind %q", resource.Kind)
 	}

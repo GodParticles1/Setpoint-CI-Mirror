@@ -18,9 +18,7 @@ type TaskRemote interface {
 	SubmitTaskResult(context.Context, string, string, task.ResultSubmission) (task.Resource, error)
 }
 
-type TaskProcessor interface {
-	ProcessOne(context.Context) error
-}
+type TaskProcessor interface{ ProcessOne(context.Context) error }
 
 type taskRemoteError struct {
 	operation string
@@ -30,13 +28,10 @@ type taskRemoteError struct {
 func (err *taskRemoteError) Error() string { return fmt.Sprintf("%s: %v", err.operation, err.err) }
 func (err *taskRemoteError) Unwrap() error { return err.err }
 
-type fatalTaskError struct {
-	err error
-}
+type fatalTaskError struct{ err error }
 
 func (err *fatalTaskError) Error() string { return err.err.Error() }
 func (err *fatalTaskError) Unwrap() error { return err.err }
-
 func isFatalTaskError(err error) bool {
 	var fatal *fatalTaskError
 	return errors.As(err, &fatal)
@@ -48,44 +43,32 @@ type TaskWorker struct {
 	system         string
 	registry       *plugin.CheckRegistry
 	operations     *operation.Registry
+	execution      OperationExecutionRunner
 	executor       executor.CommandExecutor
 	journal        *TaskJournal
 	commandTimeout time.Duration
 	now            func() time.Time
 }
 
-func NewTaskWorker(
-	remote TaskRemote,
-	agentID, system string,
-	registry *plugin.CheckRegistry, commandExecutor executor.CommandExecutor,
-	journal *TaskJournal,
-	commandTimeout time.Duration,
-) (*TaskWorker, error) {
-	return newTaskWorker(remote, agentID, system, registry, nil, commandExecutor, journal, commandTimeout)
+func NewTaskWorker(remote TaskRemote, agentID, system string, registry *plugin.CheckRegistry, commandExecutor executor.CommandExecutor, journal *TaskJournal, commandTimeout time.Duration) (*TaskWorker, error) {
+	return newTaskWorker(remote, agentID, system, registry, nil, nil, commandExecutor, journal, commandTimeout)
 }
 
-func NewTaskWorkerWithOperations(
-	remote TaskRemote,
-	agentID, system string,
-	registry *plugin.CheckRegistry, operations *operation.Registry,
-	commandExecutor executor.CommandExecutor,
-	journal *TaskJournal,
-	commandTimeout time.Duration,
-) (*TaskWorker, error) {
+func NewTaskWorkerWithOperations(remote TaskRemote, agentID, system string, registry *plugin.CheckRegistry, operations *operation.Registry, commandExecutor executor.CommandExecutor, journal *TaskJournal, commandTimeout time.Duration) (*TaskWorker, error) {
 	if operations == nil {
 		return nil, errors.New("operation registry is required")
 	}
-	return newTaskWorker(remote, agentID, system, registry, operations, commandExecutor, journal, commandTimeout)
+	return newTaskWorker(remote, agentID, system, registry, operations, nil, commandExecutor, journal, commandTimeout)
 }
 
-func newTaskWorker(
-	remote TaskRemote,
-	agentID, system string,
-	registry *plugin.CheckRegistry, operations *operation.Registry,
-	commandExecutor executor.CommandExecutor,
-	journal *TaskJournal,
-	commandTimeout time.Duration,
-) (*TaskWorker, error) {
+func NewTaskWorkerWithControlledOperations(remote TaskRemote, agentID, system string, registry *plugin.CheckRegistry, operations *operation.Registry, execution OperationExecutionRunner, commandExecutor executor.CommandExecutor, journal *TaskJournal, commandTimeout time.Duration) (*TaskWorker, error) {
+	if operations == nil || execution == nil {
+		return nil, errors.New("operation registry and bounded action runner are required")
+	}
+	return newTaskWorker(remote, agentID, system, registry, operations, execution, commandExecutor, journal, commandTimeout)
+}
+
+func newTaskWorker(remote TaskRemote, agentID, system string, registry *plugin.CheckRegistry, operations *operation.Registry, execution OperationExecutionRunner, commandExecutor executor.CommandExecutor, journal *TaskJournal, commandTimeout time.Duration) (*TaskWorker, error) {
 	if remote == nil || registry == nil || commandExecutor == nil || journal == nil {
 		return nil, errors.New("task remote, registry, executor and journal are required")
 	}
@@ -95,10 +78,7 @@ func newTaskWorker(
 	if commandTimeout <= 0 {
 		return nil, errors.New("task command timeout must be positive")
 	}
-	return &TaskWorker{
-		remote: remote, agentID: agentID, system: system, registry: registry, operations: operations,
-		executor: commandExecutor, journal: journal, commandTimeout: commandTimeout, now: time.Now,
-	}, nil
+	return &TaskWorker{remote: remote, agentID: agentID, system: system, registry: registry, operations: operations, execution: execution, executor: commandExecutor, journal: journal, commandTimeout: commandTimeout, now: time.Now}, nil
 }
 
 func (worker *TaskWorker) ProcessOne(ctx context.Context) error {
@@ -146,8 +126,7 @@ func (worker *TaskWorker) resume(ctx context.Context, entry taskJournalEntry) er
 }
 
 func (worker *TaskWorker) executeClaimed(ctx context.Context, entry taskJournalEntry) error {
-	resource, err := worker.remote.AcknowledgeTask(
-		ctx, worker.agentID, entry.Task.Metadata.ID, entry.Task.Status.ClaimID)
+	resource, err := worker.remote.AcknowledgeTask(ctx, worker.agentID, entry.Task.Metadata.ID, entry.Task.Status.ClaimID)
 	if err != nil {
 		return &taskRemoteError{operation: "acknowledge task", err: err}
 	}
@@ -178,47 +157,59 @@ func (worker *TaskWorker) executeClaimed(ctx context.Context, entry taskJournalE
 		}
 		return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, Result: &result})
 	case task.KindOperationPlanningTask:
-		if worker.operations == nil {
-			return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_registry_unavailable", errors.New("Agent has no operation planning registry")))
-		}
-		definition, ok := worker.operations.PlanningDefinition(resource.Spec.OperationID)
-		if !ok {
-			return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_definition_unavailable", fmt.Errorf("operation %q is not registered", resource.Spec.OperationID)))
-		}
-		metadata := definition.Metadata()
-		digest, err := operation.CapabilityDigest(metadata)
-		if err != nil || metadata.Version != resource.Spec.OperationVersion || digest != resource.Spec.CapabilityDigest {
-			if err == nil {
-				err = errors.New("registered operation does not match the frozen task contract")
-			}
-			return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_contract_mismatch", err))
-		}
-		if len(resource.Spec.SecretRefs) > 0 {
-			result := worker.operationBlockedResult(resource, "secret_delivery_unavailable", "runtime SecretRef delivery is not implemented")
-			return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseSucceeded, OperationResult: &result})
-		}
-		result := operation.ExecutePlanning(executionContext, definition, operation.RuntimeInput{
-			Executor: worker.executor, Parameters: resource.Spec.Parameters, System: worker.system,
-			Targets: resource.Spec.Targets, SecretRefs: resource.Spec.SecretRefs,
-		}, worker.now)
-		phase := task.PhaseSucceeded
-		if result.State == operation.StateInterrupted {
-			phase = task.PhaseFailed
-		}
-		return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationResult: &result})
+		return worker.executeOperationPlanning(ctx, executionContext, resource)
+	case task.KindOperationExecutionTask:
+		return worker.executeOperationAction(ctx, executionContext, resource)
 	default:
 		return &fatalTaskError{err: fmt.Errorf("task %s has unsupported kind %q", resource.Metadata.ID, resource.Kind)}
 	}
 }
 
-func (worker *TaskWorker) cacheAndSubmit(
-	ctx context.Context,
-	resource task.Resource,
-	submission task.ResultSubmission,
-) error {
-	entry := taskJournalEntry{
-		Version: 1, State: journalCompleted, Task: task.Clone(resource), Submission: &submission,
+func (worker *TaskWorker) executeOperationPlanning(ctx, executionContext context.Context, resource task.Resource) error {
+	if worker.operations == nil {
+		return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_registry_unavailable", errors.New("Agent has no operation planning registry")))
 	}
+	definition, ok := worker.operations.PlanningDefinition(resource.Spec.OperationID)
+	if !ok {
+		return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_definition_unavailable", fmt.Errorf("operation %q is not registered", resource.Spec.OperationID)))
+	}
+	metadata := definition.Metadata()
+	digest, err := operation.CapabilityDigest(metadata)
+	if err != nil || metadata.Version != resource.Spec.OperationVersion || digest != resource.Spec.CapabilityDigest {
+		if err == nil {
+			err = errors.New("registered operation does not match the frozen task contract")
+		}
+		return worker.cacheAndSubmit(ctx, resource, worker.operationFailureSubmission(resource, "operation_contract_mismatch", err))
+	}
+	if len(resource.Spec.SecretRefs) > 0 {
+		result := worker.operationBlockedResult(resource, "secret_delivery_unavailable", "runtime SecretRef delivery is not implemented")
+		return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseSucceeded, OperationResult: &result})
+	}
+	result := operation.ExecutePlanning(executionContext, definition, operation.RuntimeInput{Executor: worker.executor, Parameters: resource.Spec.Parameters, System: worker.system, Targets: resource.Spec.Targets, SecretRefs: resource.Spec.SecretRefs}, worker.now)
+	phase := task.PhaseSucceeded
+	if result.State == operation.StateInterrupted {
+		phase = task.PhaseFailed
+	}
+	return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationResult: &result})
+}
+
+func (worker *TaskWorker) executeOperationAction(ctx, executionContext context.Context, resource task.Resource) error {
+	if worker.execution == nil {
+		return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "operation_execution_unavailable", errors.New("Agent has no bounded action runner")))
+	}
+	if len(resource.Spec.SecretRefs) > 0 {
+		return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "secret_delivery_unavailable", errors.New("runtime SecretRef delivery is unavailable")))
+	}
+	result, err := worker.execution.Execute(executionContext, resource)
+	phase := task.PhaseSucceeded
+	if err != nil || result.Error != nil {
+		phase = task.PhaseFailed
+	}
+	return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result})
+}
+
+func (worker *TaskWorker) cacheAndSubmit(ctx context.Context, resource task.Resource, submission task.ResultSubmission) error {
+	entry := taskJournalEntry{Version: 1, State: journalCompleted, Task: task.Clone(resource), Submission: &submission}
 	if err := worker.journal.Save(entry); err != nil {
 		return &fatalTaskError{err: err}
 	}
@@ -233,10 +224,7 @@ func (worker *TaskWorker) submitCached(ctx context.Context, entry taskJournalEnt
 	if err != nil {
 		return &taskRemoteError{operation: "refresh task before result submission", err: err}
 	}
-	if current != nil &&
-		current.Metadata.ID == entry.Task.Metadata.ID &&
-		current.Status.Phase == task.PhaseCancelRequested &&
-		entry.Submission.Phase != task.PhaseCanceled {
+	if current != nil && current.Metadata.ID == entry.Task.Metadata.ID && current.Status.Phase == task.PhaseCancelRequested && entry.Submission.Phase != task.PhaseCanceled {
 		submission := worker.canceledSubmission(*current)
 		entry.Task = task.Clone(*current)
 		entry.Submission = &submission
@@ -244,8 +232,7 @@ func (worker *TaskWorker) submitCached(ctx context.Context, entry taskJournalEnt
 			return &fatalTaskError{err: err}
 		}
 	}
-	if _, err := worker.remote.SubmitTaskResult(
-		ctx, worker.agentID, entry.Task.Metadata.ID, *entry.Submission); err != nil {
+	if _, err := worker.remote.SubmitTaskResult(ctx, worker.agentID, entry.Task.Metadata.ID, *entry.Submission); err != nil {
 		return &taskRemoteError{operation: "submit task result", err: err}
 	}
 	if err := worker.journal.Clear(); err != nil {
@@ -263,74 +250,61 @@ func (worker *TaskWorker) pluginVersion(pluginID string) string {
 
 func (worker *TaskWorker) failureResult(pluginID, pluginVersion, code, message string) task.CheckResult {
 	now := worker.now().UTC()
-	return task.CheckResult{
-		PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError,
-		StartedAt: now, CompletedAt: now, Items: []task.CheckItem{},
-		Error: &task.Failure{Code: code, Message: message},
-	}
+	return task.CheckResult{PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError, StartedAt: now, CompletedAt: now, Items: []task.CheckItem{}, Error: &task.Failure{Code: code, Message: message}}
 }
 
 func (worker *TaskWorker) interruptedSubmission(resource task.Resource) task.ResultSubmission {
 	if resource.Kind == task.KindOperationPlanningTask {
 		return worker.operationTerminalSubmission(resource, task.PhaseFailed, operation.StateInterrupted, "agent_execution_interrupted", "Agent stopped after planning began; task was not run again")
 	}
+	if resource.Kind == task.KindOperationExecutionTask {
+		return worker.executionTerminalSubmission(resource, task.PhaseFailed, "agent_execution_interrupted", "Agent stopped after bounded action began; action was not run again")
+	}
 	now := worker.now().UTC()
 	pluginID, pluginVersion := worker.taskPluginIdentity(resource)
-	return task.ResultSubmission{
-		ClaimID: resource.Status.ClaimID, Phase: task.PhaseFailed,
-		Result: &task.CheckResult{
-			PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError,
-			StartedAt: now, CompletedAt: now, Items: []task.CheckItem{},
-			Error: &task.Failure{Code: "agent_execution_interrupted", Message: "Agent stopped after execution began; task was not run again"},
-		},
-	}
+	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseFailed, Result: &task.CheckResult{PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError, StartedAt: now, CompletedAt: now, Items: []task.CheckItem{}, Error: &task.Failure{Code: "agent_execution_interrupted", Message: "Agent stopped after execution began; task was not run again"}}}
 }
 
 func (worker *TaskWorker) canceledSubmission(resource task.Resource) task.ResultSubmission {
 	if resource.Kind == task.KindOperationPlanningTask {
 		return worker.operationTerminalSubmission(resource, task.PhaseCanceled, operation.StateCanceledBeforeApply, "task_canceled", "operation planning was canceled before Apply")
 	}
+	if resource.Kind == task.KindOperationExecutionTask {
+		return worker.executionTerminalSubmission(resource, task.PhaseCanceled, "task_canceled", "bounded operation action was canceled before execution")
+	}
 	now := worker.now().UTC()
 	pluginID, pluginVersion := worker.taskPluginIdentity(resource)
-	return task.ResultSubmission{
-		ClaimID: resource.Status.ClaimID, Phase: task.PhaseCanceled,
-		Result: &task.CheckResult{
-			PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError,
-			StartedAt: now, CompletedAt: now, Items: []task.CheckItem{},
-			Error: &task.Failure{Code: "task_canceled", Message: "task was canceled before plugin execution"},
-		},
+	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseCanceled, Result: &task.CheckResult{PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError, StartedAt: now, CompletedAt: now, Items: []task.CheckItem{}, Error: &task.Failure{Code: "task_canceled", Message: "task was canceled before plugin execution"}}}
+}
+
+func (worker *TaskWorker) executionFailureSubmission(resource task.Resource, code string, err error) task.ResultSubmission {
+	return worker.executionTerminalSubmission(resource, task.PhaseFailed, code, err.Error())
+}
+
+func (worker *TaskWorker) executionTerminalSubmission(resource task.Resource, phase task.Phase, code, message string) task.ResultSubmission {
+	result := task.OperationExecutionResult{Error: &task.Failure{Code: code, Message: message}}
+	if resource.Spec.OperationExecution != nil {
+		result.OperationID = resource.Spec.OperationExecution.OperationID
+		result.RunID = resource.Spec.OperationExecution.RunID
+		result.Action = resource.Spec.OperationExecution.Action
 	}
+	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result}
 }
 
 func (worker *TaskWorker) operationFailureSubmission(resource task.Resource, code string, err error) task.ResultSubmission {
 	now := worker.now().UTC()
-	result := operation.PlanningResult{
-		OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion,
-		CapabilityDigest: resource.Spec.CapabilityDigest, State: operation.StateBlocked, Checkpoint: code,
-		StartedAt: now, CompletedAt: now,
-		Block: &operation.Block{Code: code, Message: err.Error(), SafeNext: "inspect_the_failure_and_create_a_new_run", ManualReview: true},
-		Error: &operation.PlanningFailure{Code: code, Message: err.Error()},
-	}
+	result := operation.PlanningResult{OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion, CapabilityDigest: resource.Spec.CapabilityDigest, State: operation.StateBlocked, Checkpoint: code, StartedAt: now, CompletedAt: now, Block: &operation.Block{Code: code, Message: err.Error(), SafeNext: "inspect_the_failure_and_create_a_new_run", ManualReview: true}, Error: &operation.PlanningFailure{Code: code, Message: err.Error()}}
 	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseSucceeded, OperationResult: &result}
 }
 
 func (worker *TaskWorker) operationBlockedResult(resource task.Resource, code, message string) operation.PlanningResult {
 	now := worker.now().UTC()
-	return operation.PlanningResult{
-		OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion,
-		CapabilityDigest: resource.Spec.CapabilityDigest, State: operation.StateBlocked, Checkpoint: code,
-		StartedAt: now, CompletedAt: now,
-		Block: &operation.Block{Code: code, Message: message, SafeNext: "use_a_verified_runtime_secret_delivery_channel", ManualReview: true},
-	}
+	return operation.PlanningResult{OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion, CapabilityDigest: resource.Spec.CapabilityDigest, State: operation.StateBlocked, Checkpoint: code, StartedAt: now, CompletedAt: now, Block: &operation.Block{Code: code, Message: message, SafeNext: "use_a_verified_runtime_secret_delivery_channel", ManualReview: true}}
 }
 
 func (worker *TaskWorker) operationTerminalSubmission(resource task.Resource, phase task.Phase, state operation.State, code, message string) task.ResultSubmission {
 	now := worker.now().UTC()
-	result := operation.PlanningResult{
-		OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion,
-		CapabilityDigest: resource.Spec.CapabilityDigest, State: state, Checkpoint: code,
-		StartedAt: now, CompletedAt: now,
-	}
+	result := operation.PlanningResult{OperationID: resource.Spec.OperationID, OperationVersion: resource.Spec.OperationVersion, CapabilityDigest: resource.Spec.CapabilityDigest, State: state, Checkpoint: code, StartedAt: now, CompletedAt: now}
 	if phase != task.PhaseCanceled {
 		result.Error = &operation.PlanningFailure{Code: code, Message: message}
 	}

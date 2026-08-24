@@ -118,6 +118,39 @@ export interface CheckItem {
   error?: Failure
 }
 
+export interface RemediationConstraints {
+  options?: string[]
+  min?: number
+  max?: number
+  pattern?: string
+}
+
+export type RemediationAvailability = 'actionable' | 'manual_only'
+
+export interface RemediationOffer {
+  check_run_id: string
+  task_id: string
+  check_id: string
+  node_id: string
+  current_value: string
+  existing_recommended_value: string
+  recommended_value_for_this_run: string
+  recommendation_reason: string
+  availability: RemediationAvailability
+  editable: boolean
+  parameter_type?: string
+  constraints: RemediationConstraints
+  supports_automatic_fix: boolean
+  supports_rollback: boolean
+  risk: string
+  requires_restart: boolean
+  may_affect_connection: boolean
+  may_affect_business: boolean
+  operation_id?: string
+  operation_parameters?: Record<string, string>
+  block_reason?: string
+}
+
 export interface TaskResource {
   api_version: string
   kind: string
@@ -160,6 +193,7 @@ export interface CheckRun {
   spec: { node_ids: string[]; check_ids: string[]; bundle_ids?: string[]; policy_ids?: string[]; parameters?: Record<string, unknown> }
   status: { phase: RunPhase; counts: RunCounts; updated_at: string }
   tasks?: TaskResource[]
+  remediation_offers?: RemediationOffer[]
 }
 
 export type CancelOutcome = 'canceled' | 'cancel_requested' | 'already_terminal' | 'failed'
@@ -280,9 +314,49 @@ export interface OperationFinding {
   target?: OperationTarget
 }
 
+export interface OperationEvidenceRef {
+  id: string
+  kind: string
+  sha256?: string
+}
+
 export interface OperationArtifact {
   schema_version: string
   payload: unknown
+}
+
+export interface OperationRestorePoint {
+  id: string
+  provider_id: string
+  operation_id: string
+  run_id: string
+  status: 'created' | 'verified' | 'restored' | 'invalid'
+  targets: OperationTarget[]
+  created_at: string
+  expires_at?: string
+  manifest: OperationArtifact
+  evidence?: OperationEvidenceRef[]
+}
+
+export interface OperationApplyResult {
+  changed: boolean
+  checkpoint: string
+  state: OperationArtifact
+  evidence?: OperationEvidenceRef[]
+}
+
+export interface OperationVerification {
+  passed: boolean
+  summary: string
+  findings?: OperationFinding[]
+  evidence?: OperationEvidenceRef[]
+}
+
+export interface OperationRollbackResult {
+  restored: boolean
+  checkpoint: string
+  state: OperationArtifact
+  evidence?: OperationEvidenceRef[]
 }
 
 export interface OperationRun {
@@ -346,4 +420,11 @@ export interface OperationRun {
     estimated_data_change_bytes: number
   }
   plan_digest?: string
+  execution?: {
+    restore_point?: OperationRestorePoint
+    apply?: OperationApplyResult
+    verification?: OperationVerification
+    rollback?: OperationRollbackResult
+    rollback_verification?: OperationVerification
+  }
 }

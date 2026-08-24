@@ -15,6 +15,7 @@ import (
 	"setpoint/internal/bootstrap"
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
+	"setpoint/internal/operation/sysctlrepair"
 	"setpoint/internal/plugin"
 	"setpoint/internal/plugins"
 	"setpoint/internal/server"
@@ -51,6 +52,12 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	leaseSupervisor, err := operation.NewLeaseSupervisor(store, store)
+	if err != nil {
+		return err
+	}
+	defer leaseSupervisor.Close()
+
 	registry := plugin.NewCheckRegistry()
 	if err := plugins.RegisterFormal(registry); err != nil {
 		return err
@@ -62,7 +69,7 @@ func run(logger *slog.Logger) error {
 			}
 		}
 	}
-	service, err := app.NewService(store, store, registry, config.OfflineAfter)
+	service, err := app.NewServiceWithOperationLeaseAuthority(store, store, registry, config.OfflineAfter, leaseSupervisor)
 	if err != nil {
 		return err
 	}
@@ -73,11 +80,22 @@ func run(logger *slog.Logger) error {
 	if err := operationRegistry.Register(clickhouse.NewCatalogDescriptor()); err != nil {
 		return err
 	}
-	operations, err := app.NewOperationsService(store, store, operationRegistry, config.OfflineAfter)
+	if err := operationRegistry.Register(sysctlrepair.NewCatalogDescriptor()); err != nil {
+		return err
+	}
+	baseOperations, err := app.NewOperationsService(store, store, operationRegistry, config.OfflineAfter)
 	if err != nil {
 		return err
 	}
-	managementAPI, err := api.NewManagementHandlerWithOperations(store, service, operations, logger)
+	productOperations, err := app.NewProductOperations(baseOperations, store, leaseSupervisor)
+	if err != nil {
+		return err
+	}
+	productService, err := app.NewProductService(service, productOperations)
+	if err != nil {
+		return err
+	}
+	managementAPI, err := api.NewManagementHandlerWithOperations(store, productService, productOperations, logger)
 	if err != nil {
 		return err
 	}
@@ -90,7 +108,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	bootstrapService, err := bootstrap.NewService(sshFactory, artifactProvider, service, service, config.AgentAdvertiseURL)
+	bootstrapService, err := bootstrap.NewService(sshFactory, artifactProvider, productService, productService, config.AgentAdvertiseURL)
 	if err != nil {
 		return err
 	}
@@ -99,7 +117,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	agentHandler, err := api.NewAgentHandler(service, logger)
+	agentHandler, err := api.NewAgentHandler(productService, logger)
 	if err != nil {
 		return err
 	}

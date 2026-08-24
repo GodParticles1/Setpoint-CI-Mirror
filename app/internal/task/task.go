@@ -43,16 +43,17 @@ type Metadata struct {
 }
 
 type Spec struct {
-	NodeID           string                  `json:"node_id"`
-	PluginID         string                  `json:"plugin_id,omitempty"`
-	Execution        *CheckExecutionContract `json:"execution_contract,omitempty"`
-	ContractDigest   string                  `json:"contract_digest,omitempty"`
-	OperationID      string                  `json:"operation_id,omitempty"`
-	OperationVersion string                  `json:"operation_version,omitempty"`
-	CapabilityDigest string                  `json:"capability_digest,omitempty"`
-	Targets          []operation.Target      `json:"targets,omitempty"`
-	Parameters       json.RawMessage         `json:"parameters"`
-	SecretRefs       []operation.SecretRef   `json:"secret_refs,omitempty"`
+	NodeID             string                      `json:"node_id"`
+	PluginID           string                      `json:"plugin_id,omitempty"`
+	Execution          *CheckExecutionContract     `json:"execution_contract,omitempty"`
+	OperationExecution *OperationExecutionContract `json:"operation_execution_contract,omitempty"`
+	ContractDigest     string                      `json:"contract_digest,omitempty"`
+	OperationID        string                      `json:"operation_id,omitempty"`
+	OperationVersion   string                      `json:"operation_version,omitempty"`
+	CapabilityDigest   string                      `json:"capability_digest,omitempty"`
+	Targets            []operation.Target          `json:"targets,omitempty"`
+	Parameters         json.RawMessage             `json:"parameters"`
+	SecretRefs         []operation.SecretRef       `json:"secret_refs,omitempty"`
 }
 
 type Failure struct {
@@ -73,13 +74,14 @@ type Status struct {
 }
 
 type Resource struct {
-	APIVersion      string                    `json:"api_version"`
-	Kind            string                    `json:"kind"`
-	Metadata        Metadata                  `json:"metadata"`
-	Spec            Spec                      `json:"spec"`
-	Status          Status                    `json:"status"`
-	Result          *CheckResult              `json:"result,omitempty"`
-	OperationResult *operation.PlanningResult `json:"operation_result,omitempty"`
+	APIVersion               string                    `json:"api_version"`
+	Kind                     string                    `json:"kind"`
+	Metadata                 Metadata                  `json:"metadata"`
+	Spec                     Spec                      `json:"spec"`
+	Status                   Status                    `json:"status"`
+	Result                   *CheckResult              `json:"result,omitempty"`
+	OperationResult          *operation.PlanningResult `json:"operation_result,omitempty"`
+	OperationExecutionResult *OperationExecutionResult `json:"operation_execution_result,omitempty"`
 }
 
 type CheckState string
@@ -192,10 +194,11 @@ type CheckItem struct {
 }
 
 type ResultSubmission struct {
-	ClaimID         string                    `json:"claim_id"`
-	Phase           Phase                     `json:"phase"`
-	Result          *CheckResult              `json:"result,omitempty"`
-	OperationResult *operation.PlanningResult `json:"operation_result,omitempty"`
+	ClaimID                  string                    `json:"claim_id"`
+	Phase                    Phase                     `json:"phase"`
+	Result                   *CheckResult              `json:"result,omitempty"`
+	OperationResult          *operation.PlanningResult `json:"operation_result,omitempty"`
+	OperationExecutionResult *OperationExecutionResult `json:"operation_execution_result,omitempty"`
 }
 
 func NewID() (string, error) {
@@ -230,6 +233,7 @@ func ValidResultPhase(phase Phase) bool {
 func Clone(resource Resource) Resource {
 	resource.Spec.Parameters = append(json.RawMessage(nil), resource.Spec.Parameters...)
 	resource.Spec.Execution = CloneCheckExecutionContract(resource.Spec.Execution)
+	resource.Spec.OperationExecution = CloneOperationExecutionContract(resource.Spec.OperationExecution)
 	resource.Spec.Targets = append([]operation.Target(nil), resource.Spec.Targets...)
 	resource.Spec.SecretRefs = append([]operation.SecretRef(nil), resource.Spec.SecretRefs...)
 	if resource.Status.LastError != nil {
@@ -245,6 +249,12 @@ func Clone(resource Resource) Resource {
 		var result operation.PlanningResult
 		_ = json.Unmarshal(encoded, &result)
 		resource.OperationResult = &result
+	}
+	if resource.OperationExecutionResult != nil {
+		encoded, _ := json.Marshal(resource.OperationExecutionResult)
+		var result OperationExecutionResult
+		_ = json.Unmarshal(encoded, &result)
+		resource.OperationExecutionResult = &result
 	}
 	return resource
 }

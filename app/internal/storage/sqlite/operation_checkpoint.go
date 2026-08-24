@@ -29,17 +29,38 @@ func (store *Store) SaveOperationExecutionCheckpoint(
 	journal operation.JournalEntry,
 	at time.Time,
 ) (operationrun.Resource, error) {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return operationrun.Resource{}, fmt.Errorf("begin atomic operation checkpoint: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	if _, err := saveOperationExecutionCheckpointTx(ctx, transaction, runID, state, checkpoint, snapshot, recovery, journal, at); err != nil {
+		return operationrun.Resource{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return operationrun.Resource{}, fmt.Errorf("commit atomic operation checkpoint: %w", err)
+	}
+	return store.GetOperationRun(ctx, runID)
+}
+
+func saveOperationExecutionCheckpointTx(
+	ctx context.Context,
+	transaction *sql.Tx,
+	runID string,
+	state operation.State,
+	checkpoint string,
+	snapshot operationrun.ExecutionSnapshot,
+	recovery *operationrun.Recovery,
+	journal operation.JournalEntry,
+	at time.Time,
+) (operationrun.Resource, error) {
 	if journal.RunID != runID || journal.State != state || journal.Checkpoint != checkpoint || !journal.At.Equal(at) {
 		return operationrun.Resource{}, errors.New("operation checkpoint journal does not match the durable run update")
 	}
 	if err := operation.ValidateJournalEntry(journal); err != nil {
 		return operationrun.Resource{}, err
 	}
-	transaction, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return operationrun.Resource{}, fmt.Errorf("begin atomic operation checkpoint: %w", err)
-	}
-	defer func() { _ = transaction.Rollback() }()
 
 	current, err := scanOperationRun(transaction.QueryRowContext(ctx,
 		`SELECT `+operationRunColumns+` FROM operation_runs WHERE id = ?`, runID))
@@ -98,10 +119,13 @@ func (store *Store) SaveOperationExecutionCheckpoint(
 		state, checkpoint, executionJSON, recoveryJSON, formatTime(at), runID); err != nil {
 		return operationrun.Resource{}, fmt.Errorf("update atomic operation checkpoint: %w", err)
 	}
-	if err := transaction.Commit(); err != nil {
-		return operationrun.Resource{}, fmt.Errorf("commit atomic operation checkpoint: %w", err)
-	}
-	return store.GetOperationRun(ctx, runID)
+	updated := current
+	updated.Status.State = state
+	updated.Status.Checkpoint = checkpoint
+	updated.Status.UpdatedAt = at
+	updated.Status.Recovery = mergedRecovery
+	updated.Execution = merged
+	return updated, nil
 }
 
 func appendOperationJournalEntryTx(ctx context.Context, transaction *sql.Tx, entry operation.JournalEntry) error {

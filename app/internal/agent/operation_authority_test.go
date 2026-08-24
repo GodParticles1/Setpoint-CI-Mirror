@@ -1,0 +1,62 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"setpoint/internal/operation"
+	"setpoint/internal/operation/clickhouse"
+	"setpoint/internal/protocol"
+	"setpoint/internal/task"
+)
+
+type authorityStub struct {
+	lease     operation.LockLease
+	leaseErr  error
+	putErr    error
+	getErr    error
+	listErr   error
+	puts      int
+	gets      int
+	lists     int
+}
+
+func (stub *authorityStub) ValidateLease(context.Context, string, protocol.OperationActionScope) (operation.LockLease, error) {
+	return stub.lease, stub.leaseErr
+}
+func (stub *authorityStub) PutLedger(_ context.Context, _ string, _ protocol.OperationActionScope, _ clickhouse.LedgerEntry) error {
+	stub.puts++
+	return stub.putErr
+}
+func (stub *authorityStub) GetLedger(_ context.Context, _ string, _ protocol.OperationActionScope, _ clickhouse.LedgerKey) (clickhouse.LedgerEntry, bool, error) {
+	stub.gets++
+	return clickhouse.LedgerEntry{}, false, stub.getErr
+}
+func (stub *authorityStub) ListLedger(_ context.Context, _ string, _ protocol.OperationActionScope) ([]clickhouse.LedgerEntry, error) {
+	stub.lists++
+	return nil, stub.listErr
+}
+
+func TestRemoteLeaseHandleAlwaysConsultsServerAuthority(t *testing.T) {
+	now := time.Now().UTC()
+	scope := protocol.OperationActionScope{ClaimID: "claim-1", RunID: "run-1", Action: task.OperationActionApply}
+	stub := &authorityStub{lease: operation.LockLease{ID: "lease-1", OwnerID: "run-1", Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute)}}
+	handle, err := newRemoteLeaseHandle(context.Background(), stub, "task-1", scope)
+	if err != nil { t.Fatal(err) }
+	if current := handle.Current(); current.ID != "" { t.Fatalf("static lease authority leaked before validation: %#v", current) }
+	if err := handle.Validate(now); err != nil { t.Fatal(err) }
+	stub.leaseErr = errors.New("server unavailable")
+	if err := handle.Validate(now); err == nil { t.Fatal("cached lease authorized destructive action after server authority became unavailable") }
+}
+
+func TestRemoteLedgerStoreRejectsCrossRunAndTransportFailure(t *testing.T) {
+	scope := protocol.OperationActionScope{ClaimID: "claim-1", RunID: "run-1", Action: task.OperationActionApply}
+	stub := &authorityStub{putErr: errors.New("transport unavailable")}
+	store, err := newRemoteLedgerStore(context.Background(), stub, "task-1", scope)
+	if err != nil { t.Fatal(err) }
+	if _, _, err := store.Get(context.Background(), clickhouse.LedgerKey{RunID: "run-2"}); err == nil || stub.gets != 0 { t.Fatalf("cross-run get reached server: gets=%d err=%v", stub.gets, err) }
+	if _, err := store.ListRun(context.Background(), "run-2"); err == nil || stub.lists != 0 { t.Fatalf("cross-run list reached server: lists=%d err=%v", stub.lists, err) }
+	if err := store.Put(context.Background(), clickhouse.LedgerEntry{Key: clickhouse.LedgerKey{RunID: "run-1"}}); err == nil || stub.puts != 1 { t.Fatalf("transport failure produced optimistic ledger success: puts=%d err=%v", stub.puts, err) }
+}

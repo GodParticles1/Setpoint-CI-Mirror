@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"setpoint/internal/plugin"
+	"setpoint/internal/plugins/clickhousechecks"
 	"setpoint/internal/plugins/linuxaudit"
 	"setpoint/internal/plugins/linuxbaseline"
 	"setpoint/internal/plugins/linuxfiles"
@@ -16,6 +17,7 @@ import (
 
 func Formal() []plugin.CheckDescriptor {
 	return []plugin.CheckDescriptor{
+		clickhousechecks.New(),
 		linuxaudit.New(),
 		linuxbaseline.New(),
 		linuxfiles.New(),
@@ -38,6 +40,7 @@ func RegisterFormal(registry *plugin.CheckRegistry) error {
 		}
 	}
 	policies := []plugin.CheckPolicy{
+		{ID: "policy.clickhouse-migration-readiness", Name: "ClickHouse 迁移就绪只读观察", Description: "ClickHouse 组件、运行、目录、容量、Replica、拓扑、Atomic EXCHANGE 与 pair 兼容性只读观察集合", BundleIDs: []string{clickhousechecks.ID}},
 		{ID: "policy.linux-host-readonly", Name: "Linux 主机只读基线", Description: "Linux 核心、网络、审计、密码声明和固定路径权限观察集合", BundleIDs: []string{linuxaudit.ID, linuxbaseline.ID, linuxfiles.ID, linuxicmpredirects.ID, linuxnetwork.ID, linuxpassword.ID}},
 		{ID: "policy.ssh-readonly", Name: "SSH 只读基线", Description: "SSH 有效配置、语法和权限观察集合", BundleIDs: []string{sshbaseline.ID}},
 		{ID: "policy.nginx-http-readonly", Name: "Nginx HTTP 只读基线", Description: "Nginx HTTP 配置观察集合，不含证书能力", BundleIDs: []string{nginxbaseline.ID}},

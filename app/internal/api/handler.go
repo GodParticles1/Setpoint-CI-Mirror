@@ -51,6 +51,10 @@ type Service interface {
 	ClaimTask(context.Context, string) (*task.Resource, error)
 	AcknowledgeTask(context.Context, string, string, protocol.AcknowledgeTaskRequest) (task.Resource, error)
 	SubmitTaskResult(context.Context, string, string, task.ResultSubmission) (task.Resource, error)
+	ValidateOperationLease(context.Context, string, string, protocol.OperationLeaseValidationRequest) (protocol.OperationLeaseValidationResponse, error)
+	PutOperationLedger(context.Context, string, string, protocol.OperationLedgerPutRequest) error
+	GetOperationLedger(context.Context, string, string, protocol.OperationLedgerGetRequest) (protocol.OperationLedgerGetResponse, error)
+	ListOperationLedger(context.Context, string, string, protocol.OperationLedgerListRunRequest) (protocol.OperationLedgerListRunResponse, error)
 	RevokeAgentCredential(context.Context, string) (protocol.RevocationResponse, error)
 	Register(context.Context, protocol.RegistrationRequest) (protocol.RegistrationResponse, error)
 	Heartbeat(context.Context, string) (protocol.HeartbeatResponse, error)
@@ -147,7 +151,78 @@ func NewAgentHandler(service Service, logger *slog.Logger) (http.Handler, error)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/claim", handler.claimTask)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/ack", handler.acknowledgeTask)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/result", handler.submitTaskResult)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/lease/validate", handler.validateOperationLease)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/put", handler.putOperationLedger)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/get", handler.getOperationLedger)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/list-run", handler.listOperationLedger)
 	return handler.accessLog(mux), nil
+}
+
+func (handler *Handler) validateOperationLease(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationLeaseValidationRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.service.ValidateOperationLease(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) putOperationLedger(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationLedgerPutRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	if err := handler.service.PutOperationLedger(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload); err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (handler *Handler) getOperationLedger(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationLedgerGetRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.service.GetOperationLedger(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) listOperationLedger(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationLedgerListRunRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.service.ListOperationLedger(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) decodeAuthenticatedAgentJSON(writer http.ResponseWriter, request *http.Request, target any) bool {
+	if !isJSON(request.Header.Get("Content-Type")) {
+		writeError(writer, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
+		return false
+	}
+	if err := decodeJSON(writer, request, target); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_json", "request body must contain one valid JSON object")
+		return false
+	}
+	if err := handler.service.AuthenticateAgent(request.Context(), request.Header.Get("Authorization"), request.PathValue("agent_id")); err != nil {
+		handler.handleServiceError(writer, err)
+		return false
+	}
+	return true
 }
 
 func (handler *Handler) agentRuntimeReady(writer http.ResponseWriter, _ *http.Request) {
