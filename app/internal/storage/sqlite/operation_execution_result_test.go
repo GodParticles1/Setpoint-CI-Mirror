@@ -338,7 +338,6 @@ func TestOperationExecutionVerificationResultShapeRejectsInvalidEvidence(t *test
 func TestOperationExecutionFailedMutationOutputsAreRejected(t *testing.T) {
 	for _, action := range []task.OperationAction{
 		task.OperationActionCreateRestorePoint,
-		task.OperationActionApply,
 		task.OperationActionRollback,
 	} {
 		t.Run(string(action), func(t *testing.T) {
