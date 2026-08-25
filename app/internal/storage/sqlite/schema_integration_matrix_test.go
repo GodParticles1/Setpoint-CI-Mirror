@@ -12,7 +12,7 @@ import (
 )
 
 func TestEveryHistoricalSchemaMigratesToLatestAndReopens(t *testing.T) {
-	for version := 1; version < 14; version++ {
+	for version := 1; version < 15; version++ {
 		version := version
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			ctx := context.Background()
@@ -53,7 +53,6 @@ func seedHistoricalSchema(t *testing.T, ctx context.Context, path string, target
 		t.Fatal(err)
 	}
 	defer transaction.Rollback()
-
 	applyStatements := func(version int, statements []string) {
 		t.Helper()
 		for _, statement := range statements {
@@ -70,17 +69,12 @@ func seedHistoricalSchema(t *testing.T, ctx context.Context, path string, target
 	}
 	recordVersion := func(version int) {
 		t.Helper()
-		if _, err := transaction.ExecContext(ctx,
-			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`,
-			fmt.Sprint(version), time.Date(2026, 8, 17, 0, 0, version, 0, time.UTC).Format(timeFormat)); err != nil {
+		if _, err := transaction.ExecContext(ctx, `UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, fmt.Sprint(version), time.Date(2026, 8, 17, 0, 0, version, 0, time.UTC).Format(timeFormat)); err != nil {
 			t.Fatalf("record schema v%d: %v", version, err)
 		}
 	}
-
 	applyStatements(1, schemaStatements)
-	if _, err := transaction.ExecContext(ctx,
-		`INSERT INTO settings(key, value, updated_at) VALUES('schema_version', '1', ?)`,
-		time.Date(2026, 8, 17, 0, 0, 1, 0, time.UTC).Format(timeFormat)); err != nil {
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO settings(key, value, updated_at) VALUES('schema_version', '1', ?)`, time.Date(2026, 8, 17, 0, 0, 1, 0, time.UTC).Format(timeFormat)); err != nil {
 		t.Fatal(err)
 	}
 	if target >= 2 {
@@ -131,6 +125,10 @@ func seedHistoricalSchema(t *testing.T, ctx context.Context, path string, target
 		applyStatements(13, schemaV13Statements)
 		recordVersion(13)
 	}
+	if target >= 14 {
+		applyStatements(14, schemaV14Statements)
+		recordVersion(14)
+	}
 	if err := transaction.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +137,7 @@ func seedHistoricalSchema(t *testing.T, ctx context.Context, path string, target
 func assertLatestSchemaHealth(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 	var version string
-	if err := store.db.QueryRowContext(ctx,
-		`SELECT value FROM settings WHERE key = 'schema_version'`).Scan(&version); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != schemaVersion {

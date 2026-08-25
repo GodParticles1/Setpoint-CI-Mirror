@@ -11,11 +11,14 @@ import (
 	"setpoint/internal/operation"
 )
 
+const fakeSysctlDropIn = "/etc/sysctl.d/99-setpoint-test.conf"
+
 type fakeSysctlExecutor struct {
-	key        string
-	runtime    string
-	persistent string
-	writes     []string
+	key              string
+	runtime          string
+	dropInPersistent string
+	legacyPersistent string
+	writes           []string
 }
 
 func (fake *fakeSysctlExecutor) Execute(_ context.Context, command executor.Command) (executor.Result, error) {
@@ -36,17 +39,40 @@ func (fake *fakeSysctlExecutor) Execute(_ context.Context, command executor.Comm
 	}
 	if command.Name == "test" && len(command.Args) == 2 {
 		kind, path := command.Args[0], command.Args[1]
-		if kind == "-L" || kind == "-d" || path != "/etc/sysctl.conf" || kind != "-f" {
-			result := executor.Result{ExitCode: 1}
-			return result, &executor.Error{Kind: executor.ErrorExit, Result: result, Err: errors.New("not present")}
+		exists := false
+		switch {
+		case kind == "-L":
+			exists = false
+		case kind == "-d" && path == "/etc/sysctl.d":
+			exists = true
+		case kind == "-f" && path == fakeSysctlDropIn:
+			exists = true
+		case kind == "-f" && path == "/etc/sysctl.conf" && fake.legacyPersistent != "":
+			exists = true
 		}
-		return executor.Result{ExitCode: 0}, nil
+		if exists {
+			return executor.Result{ExitCode: 0}, nil
+		}
+		result := executor.Result{ExitCode: 1}
+		return result, &executor.Error{Kind: executor.ErrorExit, Result: result, Err: errors.New("not present")}
 	}
-	if command.Name == "stat" && reflect.DeepEqual(command.Args, []string{"-c", "%a|%U|%G", "--", "/etc/sysctl.conf"}) {
-		return executor.Result{Stdout: "644|root|root\n", ExitCode: 0}, nil
+	if command.Name == "stat" && len(command.Args) == 4 && command.Args[0] == "-c" && command.Args[1] == "%a|%U|%G" && command.Args[2] == "--" {
+		switch command.Args[3] {
+		case "/etc/sysctl.d":
+			return executor.Result{Stdout: "755|root|root\n", ExitCode: 0}, nil
+		case fakeSysctlDropIn, "/etc/sysctl.conf":
+			return executor.Result{Stdout: "644|root|root\n", ExitCode: 0}, nil
+		}
 	}
-	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", "/etc/sysctl.conf"}) {
-		return executor.Result{Stdout: fake.key + " = " + fake.persistent + "\n", ExitCode: 0}, nil
+	if command.Name == "find" && reflect.DeepEqual(command.Args,
+		[]string{"/etc/sysctl.d", "-mindepth", "1", "-maxdepth", "1", "-name", "*.conf", "-printf", "%y|%p\\n"}) {
+		return executor.Result{Stdout: "f|" + fakeSysctlDropIn + "\n", ExitCode: 0}, nil
+	}
+	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", fakeSysctlDropIn}) {
+		return executor.Result{Stdout: fake.key + " = " + fake.dropInPersistent + "\n", ExitCode: 0}, nil
+	}
+	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", "/etc/sysctl.conf"}) && fake.legacyPersistent != "" {
+		return executor.Result{Stdout: fake.key + " = " + fake.legacyPersistent + "\n", ExitCode: 0}, nil
 	}
 	return executor.Result{}, errors.New("unexpected command")
 }
@@ -54,12 +80,12 @@ func (fake *fakeSysctlExecutor) Execute(_ context.Context, command executor.Comm
 type validLease struct{ lease operation.LockLease }
 
 func (lease validLease) Current() operation.LockLease { return lease.lease }
-func (lease validLease) Validate(at time.Time) error     { return operation.ValidateLease(lease.lease, at) }
+func (lease validLease) Validate(at time.Time) error  { return operation.ValidateLease(lease.lease, at) }
 
 func TestBoundedRuntimeRepairApplyVerifyRollback(t *testing.T) {
 	checkID := "net.ipv4.conf.all.accept_redirects.persisted"
 	key := allowedChecks[checkID]
-	commandExecutor := &fakeSysctlExecutor{key: key, runtime: "1", persistent: "0"}
+	commandExecutor := &fakeSysctlExecutor{key: key, runtime: "1", dropInPersistent: "0"}
 	definition, err := NewDefinition(commandExecutor)
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +97,6 @@ func TestBoundedRuntimeRepairApplyVerifyRollback(t *testing.T) {
 	parameters := []byte(`{"check_id":"` + checkID + `","target_value":"runtime=0; persisted=0"}`)
 	targets := []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
 	runtime := operation.RuntimeInput{Executor: commandExecutor, Parameters: parameters, System: "linux", Targets: targets}
-
 	discovery, err := definition.Discover(context.Background(), operation.DiscoverInput{Runtime: runtime})
 	if err != nil || !discovery.Applicable {
 		t.Fatalf("discovery=%#v err=%v", discovery, err)
@@ -122,7 +147,7 @@ func TestBoundedRuntimeRepairApplyVerifyRollback(t *testing.T) {
 func TestApplyFailsClosedWhenPersistentEvidenceChanges(t *testing.T) {
 	checkID := "net.ipv4.conf.all.accept_redirects.persisted"
 	key := allowedChecks[checkID]
-	commandExecutor := &fakeSysctlExecutor{key: key, runtime: "1", persistent: "0"}
+	commandExecutor := &fakeSysctlExecutor{key: key, runtime: "1", dropInPersistent: "0"}
 	definition, _ := NewDefinition(commandExecutor)
 	parameters := []byte(`{"check_id":"` + checkID + `","target_value":"runtime=0; persisted=0"}`)
 	targets := []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
@@ -131,7 +156,7 @@ func TestApplyFailsClosedWhenPersistentEvidenceChanges(t *testing.T) {
 	precheck, _ := definition.Precheck(context.Background(), operation.PrecheckInput{Runtime: runtime, Discovery: discovery})
 	plan, _ := definition.Plan(context.Background(), operation.PlanInput{Runtime: runtime, Discovery: discovery, Precheck: precheck})
 	impact, _ := definition.Impact(context.Background(), operation.ImpactInput{Runtime: runtime, Plan: plan})
-	commandExecutor.persistent = "1"
+	commandExecutor.dropInPersistent = "1"
 	now := time.Now().UTC()
 	lease := validLease{operation.LockLease{ID: "lease-1", OwnerID: "run-1", Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}}
 	_, err := definition.Apply(context.Background(), operation.ApplyInput{Runtime: runtime, Plan: plan, Impact: impact, Lease: lease})
@@ -140,6 +165,42 @@ func TestApplyFailsClosedWhenPersistentEvidenceChanges(t *testing.T) {
 	}
 	if len(commandExecutor.writes) != 0 || commandExecutor.runtime != "1" {
 		t.Fatalf("mutation occurred: writes=%v runtime=%s", commandExecutor.writes, commandExecutor.runtime)
+	}
+}
+
+func TestApplyFailsClosedWhenSysctlLoadingViewsDisagree(t *testing.T) {
+	checkID := "net.ipv4.conf.all.accept_redirects.persisted"
+	key := allowedChecks[checkID]
+	commandExecutor := &fakeSysctlExecutor{key: key, runtime: "1", dropInPersistent: "0"}
+	definition, _ := NewDefinition(commandExecutor)
+	parameters := []byte(`{"check_id":"` + checkID + `","target_value":"runtime=0; persisted=0"}`)
+	targets := []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
+	runtime := operation.RuntimeInput{Executor: commandExecutor, Parameters: parameters, System: "linux", Targets: targets}
+	discovery, err := definition.Discover(context.Background(), operation.DiscoverInput{Runtime: runtime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	precheck, err := definition.Precheck(context.Background(), operation.PrecheckInput{Runtime: runtime, Discovery: discovery})
+	if err != nil || !precheck.Passed {
+		t.Fatalf("precheck=%#v err=%v", precheck, err)
+	}
+	plan, err := definition.Plan(context.Background(), operation.PlanInput{Runtime: runtime, Discovery: discovery, Precheck: precheck})
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact, err := definition.Impact(context.Background(), operation.ImpactInput{Runtime: runtime, Plan: plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandExecutor.legacyPersistent = "1"
+	now := time.Now().UTC()
+	lease := validLease{operation.LockLease{ID: "lease-1", OwnerID: "run-1", Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}}
+	_, err = definition.Apply(context.Background(), operation.ApplyInput{Runtime: runtime, Plan: plan, Impact: impact, Lease: lease})
+	if err == nil {
+		t.Fatal("expected disagreeing systemd-sysctl and procps --system views to block Apply")
+	}
+	if len(commandExecutor.writes) != 0 || commandExecutor.runtime != "1" {
+		t.Fatalf("mutation occurred with disagreeing loading views: writes=%v runtime=%s", commandExecutor.writes, commandExecutor.runtime)
 	}
 }
 

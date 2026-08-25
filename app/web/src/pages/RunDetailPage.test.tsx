@@ -161,8 +161,8 @@ describe('PWV1 remediation authority and execution', () => {
       expect(screen.getByText(/Rollback：已恢复/)).toBeTruthy()
       expect(screen.getByText(/VerifyRollback：通过/)).toBeTruthy()
     }
-    if (state === 'interrupted') expect(screen.getByText(/reconcile_before_retry_or_rollback/)).toBeTruthy()
-    if (state === 'rollback_failed') expect(screen.getByText(/manual_recovery/)).toBeTruthy()
+    if (state === 'interrupted') expect(screen.getAllByText(/reconcile_before_retry_or_rollback/).length).toBeGreaterThanOrEqual(1)
+    if (state === 'rollback_failed') expect(screen.getAllByText(/manual_recovery/).length).toBeGreaterThanOrEqual(1)
   })
 
   it('distinguishes rollback from verify-rollback using only Server checkpoint state', async () => {

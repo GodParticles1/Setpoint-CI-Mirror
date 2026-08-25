@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = "14"
+const schemaVersion = "15"
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS nodes (
@@ -90,10 +90,10 @@ func (store *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("reconcile Phase 3 SQLite schema %s: %w", actual, err)
 		}
 		if _, err := transaction.ExecContext(ctx,
-			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, schemaVersion, now); err != nil {
+			`UPDATE settings SET value = '14', updated_at = ? WHERE key = 'schema_version'`, now); err != nil {
 			return fmt.Errorf("record reconciled SQLite schema v14: %w", err)
 		}
-		actual = schemaVersion
+		actual = "14"
 	}
 	if actual == "1" {
 		for _, statement := range schemaV2Statements {
@@ -240,8 +240,18 @@ func (store *Store) initialize(ctx context.Context) error {
 			}
 		}
 		if _, err := transaction.ExecContext(ctx,
-			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, schemaVersion, now); err != nil {
+			`UPDATE settings SET value = '14', updated_at = ? WHERE key = 'schema_version'`, now); err != nil {
 			return fmt.Errorf("record SQLite schema v14: %w", err)
+		}
+		actual = "14"
+	}
+	if actual == "14" {
+		if err := migrateSchemaV15(ctx, transaction); err != nil {
+			return fmt.Errorf("migrate SQLite schema to v15: %w", err)
+		}
+		if _, err := transaction.ExecContext(ctx,
+			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, schemaVersion, now); err != nil {
+			return fmt.Errorf("record SQLite schema v15: %w", err)
 		}
 		actual = schemaVersion
 	}

@@ -84,14 +84,32 @@ func TestAgentAndQueryAPI(t *testing.T) {
 		t.Fatalf("decode checks: %v", err)
 	}
 	_ = response.Body.Close()
-	if len(checksEnvelope.Checks) != len(plugins.Formal())+1 || checksEnvelope.Checks[0].ID != "dev.system-info" {
-		t.Fatalf("unexpected checks: %#v", checksEnvelope.Checks)
+	expectedCheckIDs := make(map[string]struct{}, len(plugins.Formal())+len(plugin.DevelopmentChecks()))
+	for _, candidate := range plugins.Formal() {
+		expectedCheckIDs[candidate.Metadata().ID] = struct{}{}
+	}
+	for _, candidate := range plugin.DevelopmentChecks() {
+		expectedCheckIDs[candidate.Metadata().ID] = struct{}{}
+	}
+	if len(checksEnvelope.Checks) != len(expectedCheckIDs) {
+		t.Fatalf("checks count=%d, want %d: %#v", len(checksEnvelope.Checks), len(expectedCheckIDs), checksEnvelope.Checks)
+	}
+	seenCheckIDs := make(map[string]struct{}, len(checksEnvelope.Checks))
+	for _, check := range checksEnvelope.Checks {
+		seenCheckIDs[check.ID] = struct{}{}
+	}
+	if _, exists := seenCheckIDs["dev.system-info"]; !exists {
+		t.Fatalf("dev.system-info missing from checks: %#v", checksEnvelope.Checks)
+	}
+	for expectedID := range expectedCheckIDs {
+		if _, exists := seenCheckIDs[expectedID]; !exists {
+			t.Fatalf("registered check %s missing from checks: %#v", expectedID, checksEnvelope.Checks)
+		}
 	}
 }
 
 func TestAPIValidationAndUnknownHeartbeat(t *testing.T) {
 	handler := newTestHandler(t)
-
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents/invalid/register", bytes.NewReader([]byte(`{}`)))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -99,7 +117,6 @@ func TestAPIValidationAndUnknownHeartbeat(t *testing.T) {
 	if response.Code != http.StatusBadRequest || errorCode(t, response.Body.Bytes()) != "invalid_request" {
 		t.Fatalf("invalid registration status=%d body=%s", response.Code, response.Body.String())
 	}
-
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/agents/missing/heartbeat", nil)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -135,7 +152,6 @@ func TestAgentRuntimeReadinessIsAgentListenerOnly(t *testing.T) {
 	if ready.Status != "ok" || ready.Service != protocol.AgentRuntimeReadyService || ready.ContractVersion != protocol.AgentRuntimeContractVersion {
 		t.Fatalf("unexpected Agent readiness: %#v", ready)
 	}
-
 	request = httptest.NewRequest(http.MethodGet, protocol.AgentRuntimeReadyPath, nil)
 	request.RemoteAddr = "127.0.0.1:12345"
 	request.Host = "127.0.0.1:8080"
@@ -165,9 +181,7 @@ func (handlers testHandlers) combined() http.Handler {
 	})
 }
 
-func newTestHandler(t *testing.T) http.Handler {
-	return newTestHandlers(t).combined()
-}
+func newTestHandler(t *testing.T) http.Handler { return newTestHandlers(t).combined() }
 
 func newTestHandlers(t *testing.T) testHandlers {
 	t.Helper()
