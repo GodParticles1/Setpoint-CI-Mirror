@@ -1,4 +1,4 @@
-import { ArrowRight, CheckSquare2, Play, RefreshCw, Square } from 'lucide-react'
+import { ArrowRight, CheckSquare2, Play, RefreshCw, Search, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { api, APIError } from '../api/client'
 import type { CheckBundle, CheckPolicy, CheckSelection, GranularCheckDefinition } from '../api/types'
@@ -9,6 +9,7 @@ import { IdempotentOperation } from '../lib/idempotency'
 import { ResultCounts } from './DashboardPage'
 
 type CapabilityMode = 'checks' | 'bundles' | 'policies'
+type CheckRiskFilter = 'all' | GranularCheckDefinition['risk']
 
 export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   const resource = useResource(async (signal) => {
@@ -23,6 +24,10 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   const [selectedNodes, setSelectedNodes] = useState<string[]>([])
   const [selection, setSelection] = useState<CheckSelection>({ checkIds: [], bundleIds: [], policyIds: [] })
   const [mode, setMode] = useState<CapabilityMode>('checks')
+  const [checkQuery, setCheckQuery] = useState('')
+  const [checkRisk, setCheckRisk] = useState<CheckRiskFilter>('all')
+  const [checkSystem, setCheckSystem] = useState('all')
+  const [checkCategory, setCheckCategory] = useState('all')
   const [name, setName] = useState('安全基线检查')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
@@ -33,6 +38,18 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   const { nodes, definitions, bundles, policies, runs } = resource.data!
   const onlineNodeIDs = nodes.filter((node) => node.status === 'online').map((node) => node.id)
   const checkIDs = definitions.map((definition) => definition.id)
+  const normalizedCheckQuery = checkQuery.trim().toLocaleLowerCase('zh-CN')
+  const checkCategories = [...new Set(definitions.map((definition) => definition.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  const checkSystems = [...new Set(definitions.flatMap((definition) => definition.supported_systems))].sort((a, b) => a.localeCompare(b))
+  const visibleChecks = definitions.filter((definition) => {
+    const matchesQuery = !normalizedCheckQuery || [definition.name, definition.id, definition.description, definition.category, definition.plugin_id]
+      .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedCheckQuery))
+    const matchesRisk = checkRisk === 'all' || definition.risk === checkRisk
+    const matchesSystem = checkSystem === 'all' || definition.supported_systems.includes(checkSystem)
+    const matchesCategory = checkCategory === 'all' || definition.category === checkCategory
+    return matchesQuery && matchesRisk && matchesSystem && matchesCategory
+  })
+  const visibleCheckIDs = visibleChecks.map((definition) => definition.id)
   const resolvedCheckIDs = resolveCheckIDs(definitions, bundles, policies, selection)
   const selectedCapabilityCount = selection.checkIds.length + selection.bundleIds.length + selection.policyIds.length
   const pluginCount = new Set(definitions.filter((definition) => resolvedCheckIDs.includes(definition.id)).map((definition) => definition.plugin_id)).size
@@ -78,8 +95,18 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
           </div>
           {mode === 'checks' && <Selection title="独立检查项" count={selection.checkIds.length} actions={<>
             <Button className="button-quiet" disabled={checkIDs.length === 0 || checkIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: checkIDs })}>全选</Button>
+            <Button className="button-quiet" disabled={visibleCheckIDs.length === 0 || visibleCheckIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: [...new Set([...selection.checkIds, ...visibleCheckIDs])] })}>选择当前筛选</Button>
             <Button className="button-quiet" disabled={selection.checkIds.length === 0} onClick={() => setSelection({ ...selection, checkIds: [] })}>清空</Button>
-          </>}>{definitions.map((definition) => <SelectRow key={definition.id} selected={selection.checkIds.includes(definition.id)} onClick={() => setSelection({ ...selection, checkIds: toggle(selection.checkIds, definition.id) })}><div><strong>{definition.name}</strong><small>{definition.category} · {definition.id}</small></div><span className="muted">{riskLabel(definition.risk)}</span></SelectRow>)}</Selection>}
+          </>}>
+            <div className="filter-bar" aria-label="检查项筛选">
+              <label className="search-field"><Search size={15} /><span className="sr-only">搜索检查项</span><input value={checkQuery} onChange={(event) => setCheckQuery(event.target.value)} placeholder="搜索检查项名称、ID 或说明" /></label>
+              <label><span>风险</span><select aria-label="检查风险" value={checkRisk} onChange={(event) => setCheckRisk(event.target.value as CheckRiskFilter)}><option value="all">全部</option><option value="low">低风险</option><option value="medium">中风险</option><option value="high">高风险</option><option value="critical">严重风险</option></select></label>
+              <label><span>系统</span><select aria-label="检查系统" value={checkSystem} onChange={(event) => setCheckSystem(event.target.value)}><option value="all">全部</option>{checkSystems.map((system) => <option key={system} value={system}>{system}</option>)}</select></label>
+              <label><span>分类</span><select aria-label="检查分类" value={checkCategory} onChange={(event) => setCheckCategory(event.target.value)}><option value="all">全部</option>{checkCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+              <span className="filter-count">显示 {visibleChecks.length} / {definitions.length}</span>
+            </div>
+            {visibleChecks.length === 0 ? <EmptyState>没有符合当前筛选条件的检查项</EmptyState> : visibleChecks.map((definition) => <SelectRow key={definition.id} selected={selection.checkIds.includes(definition.id)} onClick={() => setSelection({ ...selection, checkIds: toggle(selection.checkIds, definition.id) })}><div><strong>{definition.name}</strong><small>{definition.category} · {definition.id}</small></div><span className="muted">{riskLabel(definition.risk)}</span></SelectRow>)}
+          </Selection>}
           {mode === 'bundles' && <Selection title="检查集合" count={selection.bundleIds.length}>{bundles.map((bundle) => <SelectRow key={bundle.id} selected={selection.bundleIds.includes(bundle.id)} onClick={() => setSelection({ ...selection, bundleIds: toggle(selection.bundleIds, bundle.id) })}><div><strong>{bundle.name}</strong><small>{bundle.category} · {bundle.check_ids.length} 个检查项</small></div><span className="muted">集合</span></SelectRow>)}</Selection>}
           {mode === 'policies' && <Selection title="检查策略" count={selection.policyIds.length}>{policies.map((policy) => <SelectRow key={policy.id} selected={selection.policyIds.includes(policy.id)} onClick={() => setSelection({ ...selection, policyIds: toggle(selection.policyIds, policy.id) })}><div><strong>{policy.name}</strong><small>{policy.description}</small></div><span className="muted">策略</span></SelectRow>)}</Selection>}
         </div>

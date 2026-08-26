@@ -47,6 +47,47 @@ describe('NodesPage node onboarding', () => {
   })
 })
 
+describe('NodesPage node removal', () => {
+  it('shows the removal boundary, confirms, calls Server DELETE, closes, and refreshes nodes', async () => {
+    vi.spyOn(api, 'sites').mockResolvedValue({ sites: [] })
+    const nodes = vi.spyOn(api, 'nodes')
+      .mockResolvedValueOnce({ nodes: [nodeFixture] })
+      .mockResolvedValue({ nodes: [] })
+    const remove = vi.spyOn(api, 'deleteNode').mockResolvedValue(undefined)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<NodesPage navigate={vi.fn()} />)
+    fireEvent.click((await screen.findByRole('button', { name: /编辑节点/ })))
+
+    expect(screen.getByText('删除会撤销该 Agent 在 Setpoint 中的登记和访问凭据，不会通过 SSH 卸载目标主机上的 Agent 进程。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '删除节点' }))
+
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0][0]).toContain('不会通过 SSH 卸载目标主机上的 Agent 进程')
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(nodeFixture.id))
+    await waitFor(() => expect(nodes.mock.calls.length).toBeGreaterThanOrEqual(2))
+    await waitFor(() => expect(screen.queryByText('node-one')).toBeNull())
+    expect(screen.queryByRole('dialog', { name: /编辑节点/ })).toBeNull()
+  })
+
+  it('shows the Server structured removal error without blocking an online node in React', async () => {
+    vi.spyOn(api, 'sites').mockResolvedValue({ sites: [] })
+    vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
+    const remove = vi.spyOn(api, 'deleteNode').mockRejectedValue(new APIError('node has active work', 409, 'active_work'))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<NodesPage navigate={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /编辑节点/ }))
+    const deleteButton = screen.getByRole('button', { name: '删除节点' }) as HTMLButtonElement
+    expect(deleteButton.disabled).toBe(false)
+    fireEvent.click(deleteButton)
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(nodeFixture.id))
+    expect(await screen.findByText('active_work: node has active work')).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /编辑节点/ })).toBeTruthy()
+  })
+})
+
 describe('NodesPage trusted executable roots', () => {
   it('shows inherited scope and only submits explicit node roots', async () => {
     const site = {

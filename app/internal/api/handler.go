@@ -33,6 +33,7 @@ type Service interface {
 	UpdateSite(context.Context, string, protocol.UpdateSiteRequest) (domain.Site, error)
 	DeleteSite(context.Context, string) error
 	UpdateNode(context.Context, string, protocol.UpdateNodeRequest) (domain.Node, error)
+	DeleteNode(context.Context, string) error
 	CreateCheckRun(context.Context, protocol.CreateCheckRunRequest) (checkrun.Resource, bool, error)
 	ListCheckRuns(context.Context, protocol.ListOptions) ([]checkrun.Resource, protocol.ListOptions, error)
 	GetCheckRun(context.Context, string) (checkrun.Resource, error)
@@ -113,6 +114,7 @@ func newManagementHandler(health HealthStore, service Service, operations Operat
 	mux.HandleFunc("GET /api/v1/nodes", handler.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{node_id}", handler.getNode)
 	mux.HandleFunc("PATCH /api/v1/nodes/{node_id}", handler.updateNode)
+	mux.HandleFunc("DELETE /api/v1/nodes/{node_id}", handler.deleteNode)
 	mux.HandleFunc("GET /api/v1/checks", handler.listChecks)
 	mux.HandleFunc("GET /api/v1/check-definitions", handler.listCheckDefinitions)
 	mux.HandleFunc("GET /api/v1/check-bundles", handler.listCheckBundles)
@@ -305,6 +307,14 @@ func (handler *Handler) getNode(writer http.ResponseWriter, request *http.Reques
 	writeJSON(writer, http.StatusOK, node)
 }
 
+func (handler *Handler) deleteNode(writer http.ResponseWriter, request *http.Request) {
+	if err := handler.service.DeleteNode(request.Context(), request.PathValue("node_id")); err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
 func (handler *Handler) listChecks(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"checks": handler.service.ListChecks()})
 }
@@ -358,6 +368,8 @@ func serviceConflictCode(err error) string {
 		return "site_name_conflict"
 	case errors.Is(err, domain.ErrSiteNotEmpty):
 		return "site_not_empty"
+	case errors.Is(err, domain.ErrNodeActiveWork):
+		return "active_work"
 	default:
 		return taskConflictCode(err)
 	}

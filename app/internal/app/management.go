@@ -30,6 +30,7 @@ type ManagementRepository interface {
 	UpdateSite(context.Context, domain.Site) (domain.Site, error)
 	DeleteSite(context.Context, string) error
 	UpdateNode(context.Context, string, domain.NodeUpdate) (domain.Node, error)
+	RetireNode(context.Context, string, time.Time) error
 	CreateCheckRun(context.Context, checkrun.Resource, []task.Resource) (checkrun.Resource, bool, error)
 	GetCheckRun(context.Context, string) (checkrun.Resource, error)
 	ListCheckRuns(context.Context, int, int) ([]checkrun.Resource, error)
@@ -157,6 +158,18 @@ func (service *Service) UpdateNode(ctx context.Context, id string, request proto
 		update.TrustedExecutableRoots = &roots
 	}
 	return service.nodes.UpdateNode(ctx, id, update)
+}
+
+func (service *Service) DeleteNode(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if err := validateIdentifier(id); err != nil {
+		return &ValidationError{Err: fmt.Errorf("node id: %w", err)}
+	}
+	err := service.nodes.RetireNode(ctx, id, service.now().UTC())
+	if errors.Is(err, domain.ErrNodeActiveWork) {
+		return &ConflictError{Err: err}
+	}
+	return err
 }
 
 func (service *Service) CreateCheckRun(

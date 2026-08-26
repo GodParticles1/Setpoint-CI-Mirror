@@ -488,6 +488,13 @@ func sameTaskSpec(left, right task.Resource) bool {
 }
 
 func insertTask(ctx context.Context, transaction *sql.Tx, resource task.Resource) error {
+	var active int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT 1 FROM nodes WHERE id = ? AND retired_at IS NULL`, resource.Spec.NodeID).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return domain.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("verify active task node: %w", err)
+	}
 	executionContract, contractDigest, err := encodeTaskExecution(resource.Spec)
 	if err != nil {
 		return err

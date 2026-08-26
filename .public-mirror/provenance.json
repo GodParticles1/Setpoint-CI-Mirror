@@ -1,13 +1,13 @@
 {
     "schema":  "setpoint-public-mirror-v1",
     "source_private_repo":  "GodParticles1/Setpoint",
-    "source_private_sha":  "1c06d20e82818ab794078ac1b8601c9db2ffc201",
+    "source_private_sha":  "a45d11e0f94f01302e68473f0136ab0787abcd65",
     "governance_private_sha":  "f9d90d511658eae8c2fc89645e27e23a39e2b8ef",
     "projection_paths":  [
                              ".gitattributes",
                              "app"
                          ],
     "projection_manifest_sha256":  "d9718a1588648cda77d22e9e3f140f98036c989b31bfb5826bcc52e8dc2d986f",
-    "source_projection_git_tree_sha256":  "6a8a4adb6a945ccb1b584940e286e3a5d7c2ba4d958a4f2e2f4cf5a635bffcbf",
-    "public_ci_workflow_sha256":  "ce9c5b67ac4791be5353cd56874b63a3a5347a16cf7899f7758e1b361f552aec"
+    "source_projection_git_tree_sha256":  "bdeb2fca12556ff532d99b467cfb38ca46bad7a5c287184794a17ba313a76e22",
+    "public_ci_workflow_sha256":  "a3f353726b0cb94fc01833667d630cde8710f6d4ae2acb9a26ac9eea5fc8356d"
 }

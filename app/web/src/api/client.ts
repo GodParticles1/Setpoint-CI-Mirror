@@ -126,6 +126,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ site_id: siteId, tags, notes, trusted_executable_roots: trustedRoots }),
     }),
+  deleteNode: (id: string) => request<void>(`/api/v1/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createRun: (name: string, nodeIds: string[], selection: CheckSelection, idempotencyKey: string) =>
     request<CheckRun>('/api/v1/check-runs', {
       method: 'POST',

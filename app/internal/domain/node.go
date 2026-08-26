@@ -7,7 +7,10 @@ import (
 	"setpoint/internal/trustedexec"
 )
 
-var ErrNotFound = errors.New("resource not found")
+var (
+	ErrNotFound       = errors.New("resource not found")
+	ErrNodeActiveWork = errors.New("node has active work")
+)
 
 type NodeStatus string
 

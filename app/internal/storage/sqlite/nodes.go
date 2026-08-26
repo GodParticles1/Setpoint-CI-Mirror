@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"setpoint/internal/domain"
+	"setpoint/internal/operation"
+	"setpoint/internal/task"
 	"setpoint/internal/trustedexec"
 )
 
@@ -22,7 +24,7 @@ func (store *Store) RegisterNode(ctx context.Context, registration domain.Regist
 	}
 	defer func() { _ = transaction.Rollback() }()
 
-	_, err = transaction.ExecContext(ctx, `
+	result, err := transaction.ExecContext(ctx, `
 		INSERT INTO nodes(id, hostname, os, os_version, arch, agent_version, reported_address, registered_at, last_seen_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -33,11 +35,19 @@ func (store *Store) RegisterNode(ctx context.Context, registration domain.Regist
 			agent_version = excluded.agent_version,
 			reported_address = excluded.reported_address,
 			last_seen_at = excluded.last_seen_at,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at
+		WHERE nodes.retired_at IS NULL`,
 		registration.AgentID, registration.Hostname, registration.OS, registration.OSVersion,
 		registration.Arch, registration.AgentVersion, registration.ObservedSourceAddress, timestamp, timestamp, timestamp)
 	if err != nil {
 		return domain.Node{}, fmt.Errorf("upsert node: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("read node registration count: %w", err)
+	}
+	if updated == 0 {
+		return domain.Node{}, domain.ErrNotFound
 	}
 	if _, err := transaction.ExecContext(ctx,
 		`INSERT INTO agent_registrations(agent_id, registered_at) VALUES(?, ?)`,
@@ -59,7 +69,7 @@ func (store *Store) RecordHeartbeat(ctx context.Context, agentID string, receive
 	defer func() { _ = transaction.Rollback() }()
 
 	result, err := transaction.ExecContext(ctx,
-		`UPDATE nodes SET last_seen_at = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE nodes SET last_seen_at = ?, updated_at = ? WHERE id = ? AND retired_at IS NULL`,
 		timestamp, timestamp, agentID)
 	if err != nil {
 		return fmt.Errorf("update node heartbeat: %w", err)
@@ -88,7 +98,8 @@ func (store *Store) ListNodes(ctx context.Context, onlineWithin time.Duration) (
 			n.reported_address, COALESCE(n.site_id, ''), COALESCE(s.name, ''), n.tags_json, n.notes,
 			COALESCE(s.trusted_executable_roots_json, '[]'), n.trusted_executable_roots_json,
 			n.registered_at, n.last_seen_at
-		FROM nodes n LEFT JOIN sites s ON s.id = n.site_id ORDER BY n.id`)
+		FROM nodes n LEFT JOIN sites s ON s.id = n.site_id
+		WHERE n.retired_at IS NULL ORDER BY n.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -115,7 +126,8 @@ func (store *Store) GetNode(ctx context.Context, id string, onlineWithin time.Du
 			n.reported_address, COALESCE(n.site_id, ''), COALESCE(s.name, ''), n.tags_json, n.notes,
 			COALESCE(s.trusted_executable_roots_json, '[]'), n.trusted_executable_roots_json,
 			n.registered_at, n.last_seen_at
-		FROM nodes n LEFT JOIN sites s ON s.id = n.site_id WHERE n.id = ?`, id)
+		FROM nodes n LEFT JOIN sites s ON s.id = n.site_id
+		WHERE n.id = ? AND n.retired_at IS NULL`, id)
 	node, err := scanNode(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Node{}, domain.ErrNotFound
@@ -125,6 +137,74 @@ func (store *Store) GetNode(ctx context.Context, id string, onlineWithin time.Du
 	}
 	node.Status = statusAt(node.LastSeenAt, store.now(), onlineWithin)
 	return node, nil
+}
+
+func (store *Store) RetireNode(ctx context.Context, id string, retiredAt time.Time) error {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin node retirement: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	var active int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT 1 FROM nodes WHERE id = ? AND retired_at IS NULL`, id).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return domain.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("read active node before retirement: %w", err)
+	}
+	if err := transaction.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM tasks WHERE node_id = ? AND phase NOT IN (?, ?, ?)
+	)`, id, task.PhaseCanceled, task.PhaseSucceeded, task.PhaseFailed).Scan(&active); err != nil {
+		return fmt.Errorf("check node active work: %w", err)
+	}
+	if active != 0 {
+		return domain.ErrNodeActiveWork
+	}
+	rows, err := transaction.QueryContext(ctx, `SELECT state FROM operation_runs WHERE node_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("list node operation states before retirement: %w", err)
+	}
+	for rows.Next() {
+		var state operation.State
+		if err := rows.Scan(&state); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan node operation state before retirement: %w", err)
+		}
+		if !operation.Terminal(state) {
+			_ = rows.Close()
+			return domain.ErrNodeActiveWork
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate node operation states before retirement: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close node operation states before retirement: %w", err)
+	}
+
+	timestamp := formatTime(retiredAt)
+	if _, err := transaction.ExecContext(ctx, `UPDATE agent_credentials
+		SET revoked_at = COALESCE(revoked_at, ?) WHERE agent_id = ?`, timestamp, id); err != nil {
+		return fmt.Errorf("revoke node Agent credentials: %w", err)
+	}
+	result, err := transaction.ExecContext(ctx, `UPDATE nodes SET retired_at = ?, updated_at = ?
+		WHERE id = ? AND retired_at IS NULL`, timestamp, timestamp, id)
+	if err != nil {
+		return fmt.Errorf("retire node: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read node retirement count: %w", err)
+	}
+	if updated == 0 {
+		return domain.ErrNotFound
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit node retirement: %w", err)
+	}
+	return nil
 }
 
 type scanner interface {

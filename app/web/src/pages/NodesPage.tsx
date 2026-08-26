@@ -123,7 +123,15 @@ function NodeDialog({ node, sites, close, saved }: { node: Node; sites: Site[]; 
     catch (reason) { setError(reason instanceof APIError ? reason.message : '保存失败') }
     finally { setBusy(false) }
   }
-  return <Dialog title={`编辑节点 · ${node.hostname}`} close={close}><label className="field"><span>站点</span><select value={siteID} onChange={(event) => setSiteID(event.target.value)}><option value="">未分配</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label><label className="field"><span>标签</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="多个标签使用英文逗号分隔" /></label><label className="field"><span>备注</span><textarea maxLength={1000} rows={5} value={notes} onChange={(event) => setNotes(event.target.value)} /></label><TrustedRootsEditor label="节点可信可执行根" value={trustedRoots} onChange={setTrustedRoots} roots={node.trusted_executable_roots} />{error && <p className="inline-error">{error}</p>}<div className="dialog-actions"><span /><Button onClick={close}>取消</Button><Button className="button-primary" disabled={busy} onClick={save}><Save size={15} />{busy ? '正在保存' : '保存'}</Button></div></Dialog>
+  const remove = async () => {
+    const warning = `删除节点“${node.hostname}”？\n\n删除会撤销该 Agent 在 Setpoint 中的登记和访问凭据，不会通过 SSH 卸载目标主机上的 Agent 进程。`
+    if (!window.confirm(warning)) return
+    setBusy(true); setError('')
+    try { await api.deleteNode(node.id); saved() }
+    catch (reason) { setError(reason instanceof APIError ? `${reason.code}: ${reason.message}` : '删除节点失败') }
+    finally { setBusy(false) }
+  }
+  return <Dialog title={`编辑节点 · ${node.hostname}`} close={close}><label className="field"><span>站点</span><select value={siteID} onChange={(event) => setSiteID(event.target.value)}><option value="">未分配</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label><label className="field"><span>标签</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="多个标签使用英文逗号分隔" /></label><label className="field"><span>备注</span><textarea maxLength={1000} rows={5} value={notes} onChange={(event) => setNotes(event.target.value)} /></label><TrustedRootsEditor label="节点可信可执行根" value={trustedRoots} onChange={setTrustedRoots} roots={node.trusted_executable_roots} /><p className="risk-note">删除会撤销该 Agent 在 Setpoint 中的登记和访问凭据，不会通过 SSH 卸载目标主机上的 Agent 进程。</p>{error && <p className="inline-error">{error}</p>}<div className="dialog-actions"><Button className="button-danger" disabled={busy} onClick={remove}><Trash2 size={15} />删除节点</Button><span /><Button onClick={close}>取消</Button><Button className="button-primary" disabled={busy} onClick={save}><Save size={15} />{busy ? '正在保存' : '保存'}</Button></div></Dialog>
 }
 
 function TrustedRootsEditor({ label, value, onChange, roots }: { label: string; value: string; onChange: (value: string) => void; roots: TrustedExecutableRoot[] }) {

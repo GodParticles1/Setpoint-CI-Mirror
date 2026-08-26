@@ -33,6 +33,17 @@ describe('API client', () => {
     await expect(api.dashboard()).rejects.toMatchObject({ status: 500, code: 'server_failure', message: '服务暂不可用' })
   })
 
+  it('uses the Server-authoritative node removal route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.deleteNode('node/1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/nodes/node%2F1')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'DELETE' })
+  })
+
   it('uses frozen operation targets and exact plan digest in planning requests', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
     vi.stubGlobal('fetch', fetchMock)

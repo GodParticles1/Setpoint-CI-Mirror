@@ -27,7 +27,7 @@ func TestFreshSchemaV15SupportsOperationExecutionTasksFailClosed(t *testing.T) {
 	assertForeignKeysClean(t, ctx, store.db)
 }
 
-func TestSchemaV15MigrationPreservesTaskAndOperationRunGraph(t *testing.T) {
+func TestSchemaV15AndV16MigrationPreservesTaskAndOperationRunGraph(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "setpoint.db")
 	seedHistoricalSchema(t, ctx, path, 14)
@@ -63,11 +63,11 @@ func TestSchemaV15MigrationPreservesTaskAndOperationRunGraph(t *testing.T) {
 
 	store, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("migrate v14 to v15: %v", err)
+		t.Fatalf("migrate v14 to latest: %v", err)
 	}
 	defer store.Close()
 	var version string
-	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != "15" {
+	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("schema version=%q err=%v", version, err)
 	}
 	for id, kind := range map[string]string{"read-v14": task.KindReadOnlyCheckTask, "plan-v14": task.KindOperationPlanningTask} {
