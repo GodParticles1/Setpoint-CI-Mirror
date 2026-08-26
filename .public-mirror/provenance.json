@@ -9,5 +9,5 @@
                          ],
     "projection_manifest_sha256":  "d9718a1588648cda77d22e9e3f140f98036c989b31bfb5826bcc52e8dc2d986f",
     "source_projection_git_tree_sha256":  "bdeb2fca12556ff532d99b467cfb38ca46bad7a5c287184794a17ba313a76e22",
-    "public_ci_workflow_sha256":  "a3f353726b0cb94fc01833667d630cde8710f6d4ae2acb9a26ac9eea5fc8356d"
+    "public_ci_workflow_sha256":  "ee56df85421830d23b06c46dc6bb9b725fa08e307fcddbf5e5fd5bc2a132d104"
 }
