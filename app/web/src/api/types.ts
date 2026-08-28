@@ -281,8 +281,8 @@ export interface OperationDefinition {
     risk: OperationRisk
     impact: string
     supported_systems: string[]
-    parameters: OperationParameter[]
-    secret_requirements: SecretRequirement[]
+    parameters?: OperationParameter[]
+    secret_requirements?: SecretRequirement[]
   }
   capability_digest: string
   availability: {

@@ -36,8 +36,10 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
   if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.refresh} />
   const nodes = resource.data?.nodes ?? []
   const onlineNodes = nodes.filter((node) => node.status === 'online')
-  const requiredSecretUnavailable = Boolean(definition?.metadata.secret_requirements.some((item) => item.required) && !definition?.availability.secret_delivery)
-  const unsupported = definition ? definition.metadata.parameters.some((parameter) => !parameterSupported(parameter)) : false
+  const parameters = definition?.metadata.parameters ?? []
+  const secretRequirements = definition?.metadata.secret_requirements ?? []
+  const requiredSecretUnavailable = Boolean(secretRequirements.some((item) => item.required) && !definition?.availability.secret_delivery)
+  const unsupported = parameters.some((parameter) => !parameterSupported(parameter))
   const disabledReason = submitting ? '正在创建操作计划' : requiredSecretUnavailable ? '当前能力需要运行时秘密，但秘密交付尚未开放' : unsupported ? '当前客户端无法安全表达目录中的参数类型' : !nodeID ? '请先选择在线执行节点' : ''
 
   const submit = async () => {
@@ -86,9 +88,9 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
         <div className="operation-boundary"><ShieldAlert size={18} /><div><strong>{definition.availability.planning ? '计划可用' : '计划不可用'} · {definition.availability.apply ? '实际执行可用' : '实际执行未开放'}</strong><p>{definition.metadata.impact}</p>{definition.availability.block_code && <code>{definition.availability.block_code}</code>}</div></div>
         <label className="field"><span>执行节点</span><select aria-label="执行节点" value={nodeID} onChange={(event) => setNodeID(event.target.value)}><option value="">请选择在线节点</option>{nodes.map((node) => <option key={node.id} value={node.id} disabled={node.status !== 'online'}>{node.hostname} · {node.os} {node.os_version}{node.status !== 'online' ? ' · 离线' : ''}</option>)}</select></label>
         <section className="operation-fields" aria-label="操作参数">
-          {definition.metadata.parameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}
+          {parameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}
         </section>
-        {definition.metadata.secret_requirements.length > 0 && <section className="secret-boundary"><strong>运行时秘密边界</strong><p>{definition.availability.secret_delivery ? '仅接受不透明引用标识，页面不保存秘密内容。' : '运行时秘密交付尚未开放；页面不接收密码、Token 或私钥。'}</p></section>}
+        {secretRequirements.length > 0 && <section className="secret-boundary"><strong>运行时秘密边界</strong><p>{definition.availability.secret_delivery ? '仅接受不透明引用标识，页面不保存秘密内容。' : '运行时秘密交付尚未开放；页面不接收密码、Token 或私钥。'}</p></section>}
         {requiredSecretUnavailable && <div className="notice-error">该操作需要运行时秘密，当前无法创建可执行计划。</div>}
         {unsupported && <div className="notice-error">目录包含当前客户端不支持的参数类型，已阻止提交。</div>}
         {submitError && <div className="notice-error" role="alert">{submitError}</div>}
@@ -114,7 +116,7 @@ function FieldControl({ field, path, value, setValue }: { field: OperationParame
 
 export function buildOperationParameters(definition: OperationDefinition, values: FormValues): { parameters: Record<string, unknown>; error?: string } {
   const parameters: Record<string, unknown> = {}
-  for (const parameter of definition.metadata.parameters) {
+  for (const parameter of definition.metadata.parameters ?? []) {
     if (!parameterSupported(parameter)) return { parameters: {}, error: `参数 ${parameter.name} 使用了不支持的目录类型` }
     if (parameter.type === 'object') {
       const object: Record<string, unknown> = {}

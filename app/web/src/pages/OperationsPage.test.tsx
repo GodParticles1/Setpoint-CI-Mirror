@@ -3,10 +3,26 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api, APIError } from '../api/client'
+import type { OperationDefinition } from '../api/types'
 import { nodeFixture, operationDefinitionFixture, operationRunFixture } from '../test/fixtures'
 import { buildOperationParameters, OperationsPage } from './OperationsPage'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+function sysctlOperation(): OperationDefinition {
+  const operation = structuredClone(operationDefinitionFixture)
+  operation.metadata.id = 'linux.network.icmp_redirects.runtime_repair'
+  operation.metadata.name = 'ICMP Redirect 运行时修复'
+  operation.metadata.category = 'linux_runtime_repair'
+  operation.metadata.risk = 'low'
+  operation.metadata.parameters = [
+    { name: 'check_id', type: 'string', description: '检查项', required: true },
+    { name: 'target_value', type: 'string', description: '目标值', required: true },
+  ]
+  delete operation.metadata.secret_requirements
+  operation.availability.secret_delivery = false
+  return operation
+}
 
 describe('OperationsPage', () => {
   it('shows an empty catalog without rendering a create form', async () => {
@@ -15,6 +31,45 @@ describe('OperationsPage', () => {
     render(<OperationsPage navigate={vi.fn()} />)
     expect(await screen.findByText('没有已注册的受控操作')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '生成操作计划' })).toBeNull()
+  })
+
+  it('renders a sysctl operation when secret_requirements is omitted', async () => {
+    const operation = sysctlOperation()
+    vi.spyOn(api, 'operations').mockResolvedValue({ operations: [operation] })
+    vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
+
+    render(<OperationsPage navigate={vi.fn()} />)
+
+    expect(await screen.findByRole('heading', { name: 'ICMP Redirect 运行时修复' })).toBeTruthy()
+    expect(screen.getByText('linux.network.icmp_redirects.runtime_repair')).toBeTruthy()
+    expect(screen.queryByText('运行时秘密边界')).toBeNull()
+  })
+
+  it('renders both sysctl and ClickHouse catalog entries', async () => {
+    const sysctl = sysctlOperation()
+    const clickhouse = structuredClone(operationDefinitionFixture)
+    clickhouse.metadata.id = 'operation.clickhouse.online_migration'
+    clickhouse.metadata.name = 'ClickHouse 在线迁移'
+    vi.spyOn(api, 'operations').mockResolvedValue({ operations: [sysctl, clickhouse] })
+    vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
+
+    render(<OperationsPage navigate={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /ICMP Redirect 运行时修复/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /ClickHouse 在线迁移/ })).toBeTruthy()
+  })
+
+  it('renders an empty parameter area and builds empty parameters when parameters is omitted', async () => {
+    const operation = sysctlOperation()
+    delete operation.metadata.parameters
+    vi.spyOn(api, 'operations').mockResolvedValue({ operations: [operation] })
+    vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
+
+    render(<OperationsPage navigate={vi.fn()} />)
+
+    await screen.findByRole('heading', { name: 'ICMP Redirect 运行时修复' })
+    expect(screen.getByLabelText('操作参数').childElementCount).toBe(0)
+    expect(buildOperationParameters(operation, {})).toEqual({ parameters: {} })
   })
 
   it('renders catalog fields without capability-specific UI branches and submits canonical values', async () => {
@@ -70,7 +125,7 @@ describe('OperationsPage', () => {
 
   it('does not render plaintext secret controls or write browser storage', async () => {
     const requiredSecret = structuredClone(operationDefinitionFixture)
-    requiredSecret.metadata.secret_requirements[0].required = true
+    requiredSecret.metadata.secret_requirements![0].required = true
     vi.spyOn(api, 'operations').mockResolvedValue({ operations: [requiredSecret] })
     vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
     const local = vi.spyOn(Storage.prototype, 'setItem')
@@ -83,6 +138,12 @@ describe('OperationsPage', () => {
 })
 
 describe('buildOperationParameters', () => {
+  it('returns an empty object when metadata.parameters is omitted', () => {
+    const operation = structuredClone(operationDefinitionFixture)
+    delete operation.metadata.parameters
+    expect(buildOperationParameters(operation, {})).toEqual({ parameters: {} })
+  })
+
   it('rejects unsupported metadata instead of accepting arbitrary JSON', () => {
     const invalid = structuredClone(operationDefinitionFixture)
     invalid.metadata.parameters = [{ name: 'payload', type: 'object', description: 'payload', required: true, fields: [] }]
@@ -91,7 +152,7 @@ describe('buildOperationParameters', () => {
 
   it('rejects secret-like catalog fields before rendering a plaintext control', () => {
     const invalid = structuredClone(operationDefinitionFixture)
-    invalid.metadata.parameters[0].fields!.push({ name: 'access_token', type: 'string', description: 'token', required: false })
+    invalid.metadata.parameters![0].fields!.push({ name: 'access_token', type: 'string', description: 'token', required: false })
     expect(buildOperationParameters(invalid, {})).toMatchObject({ error: expect.stringContaining('不支持') })
   })
 

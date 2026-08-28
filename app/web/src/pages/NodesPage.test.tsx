@@ -70,6 +70,22 @@ describe('NodesPage node removal', () => {
     expect(screen.queryByRole('dialog', { name: /编辑节点/ })).toBeNull()
   })
 
+  it('keeps the node and does not call Server DELETE when native confirmation is canceled', async () => {
+    vi.spyOn(api, 'sites').mockResolvedValue({ sites: [] })
+    vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
+    const remove = vi.spyOn(api, 'deleteNode').mockResolvedValue(undefined)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    render(<NodesPage navigate={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /编辑节点/ }))
+    fireEvent.click(screen.getByRole('button', { name: '删除节点' }))
+
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(remove).not.toHaveBeenCalled()
+    expect(screen.getByText('node-one')).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /编辑节点/ })).toBeTruthy()
+  })
+
   it('shows the Server structured removal error without blocking an online node in React', async () => {
     vi.spyOn(api, 'sites').mockResolvedValue({ sites: [] })
     vi.spyOn(api, 'nodes').mockResolvedValue({ nodes: [nodeFixture] })
