@@ -5,6 +5,7 @@ import './styles.css'
 import './polish.css'
 import './polish-operations.css'
 import './node-bootstrap.css'
+import './final-ux.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

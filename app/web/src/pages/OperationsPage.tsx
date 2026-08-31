@@ -5,6 +5,7 @@ import type { OperationDefinition, OperationParameter, OperationParameterField }
 import { Button, EmptyState, ErrorState, IconButton, Loading, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { IdempotentOperation } from '../lib/idempotency'
+import { operationParameterAdvanced, operationParameterLabel, operationPresentation } from '../lib/operationPresentation'
 
 type FormValue = string | boolean
 type FormValues = Record<string, FormValue>
@@ -38,6 +39,9 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
   const onlineNodes = nodes.filter((node) => node.status === 'online')
   const parameters = definition?.metadata.parameters ?? []
   const secretRequirements = definition?.metadata.secret_requirements ?? []
+  const basicParameters = definition ? parameters.filter((parameter) => !operationParameterAdvanced(definition.metadata.id, parameter.name)) : []
+  const advancedParameters = definition ? parameters.filter((parameter) => operationParameterAdvanced(definition.metadata.id, parameter.name)) : []
+  const presentation = definition ? operationPresentation(definition) : undefined
   const requiredSecretUnavailable = Boolean(secretRequirements.some((item) => item.required) && !definition?.availability.secret_delivery)
   const unsupported = parameters.some((parameter) => !parameterSupported(parameter))
   const disabledReason = submitting ? '正在创建操作计划' : requiredSecretUnavailable ? '当前能力需要运行时秘密，但秘密交付尚未开放' : unsupported ? '当前客户端无法安全表达目录中的参数类型' : !nodeID ? '请先选择在线执行节点' : ''
@@ -72,24 +76,30 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
 
   return <>
     <PageHeader title="受控操作" description={`${operations.length} 个已注册能力；当前仅开放发现、前置检查和计划`} actions={<><IconButton label="刷新" onClick={resource.refresh}><RefreshCw size={17} /></IconButton><Button onClick={() => navigate('/operations/runs')}>操作记录<ArrowRight size={16} /></Button></>} />
-    <div className="planning-only-banner"><ShieldAlert size={17} /><div><strong>Controlled Operations 当前为 planning-only</strong><p>页面可以生成和确认操作计划，但不会执行 Apply，也不提供 Rollback 或隐藏 mutation 入口。</p></div></div>
+    <div className="planning-only-banner"><ShieldAlert size={17} /><div><strong>受控操作当前仅开放规划能力</strong><p>页面可以完成发现、安全前置检查、生成计划和计划确认，但不会执行实际变更（Apply），也不提供隐藏的变更入口。</p></div></div>
     {resource.error && <div className="notice-error" role="status">刷新失败：{resource.error}</div>}
     {operations.length === 0 ? <EmptyState>没有已注册的受控操作</EmptyState> : <section className="operation-layout">
       <div className="operation-catalog" aria-label="操作目录">
-        {operations.map((operation) => <button key={operation.metadata.id} type="button" className={`operation-catalog-row ${operation.metadata.id === definition?.metadata.id ? 'selected' : ''}`} onClick={() => setSelectedID(operation.metadata.id)}>
-          <span className="operation-icon"><Wrench size={17} /></span>
-          <span><strong>{operation.metadata.name}</strong><small>{operation.metadata.category} · v{operation.metadata.version}</small><small>{operation.availability.planning ? '可生成计划' : '计划不可用'} · {operation.availability.apply ? 'Apply 可用' : 'Apply 未开放'}</small></span>
-          <span className={`risk risk-${operation.metadata.risk}`}>{riskLabel(operation.metadata.risk)}</span>
-        </button>)}
+        {operations.map((operation) => {
+          const itemPresentation = operationPresentation(operation)
+          return <button key={operation.metadata.id} type="button" className={`operation-catalog-row ${operation.metadata.id === definition?.metadata.id ? 'selected' : ''}`} onClick={() => setSelectedID(operation.metadata.id)}>
+            <span className="operation-icon"><Wrench size={17} /></span>
+            <span><strong>{itemPresentation.name}</strong><small>{itemPresentation.category} · v{operation.metadata.version}</small><small>{operation.availability.planning ? '可生成计划' : '计划不可用'} · {operation.availability.apply ? '实际执行可用' : '实际执行未开放'}</small></span>
+            <span className={`risk risk-${operation.metadata.risk}`}>{riskLabel(operation.metadata.risk)}</span>
+          </button>
+        })}
       </div>
-      {definition && <div className="operation-composer">
-        <header className="operation-definition-header"><div><h2>{definition.metadata.name}</h2><p>{definition.metadata.description}</p></div><code>{definition.metadata.id}</code></header>
-        <dl className="operation-definition-facts"><div><dt>风险等级</dt><dd><span className={`risk risk-${definition.metadata.risk}`}>{riskLabel(definition.metadata.risk)}</span></dd></div><div><dt>适用系统</dt><dd>{definition.metadata.supported_systems.join(', ')}</dd></div><div><dt>影响范围</dt><dd>{definition.metadata.impact}</dd></div></dl>
-        <div className="operation-boundary"><ShieldAlert size={18} /><div><strong>{definition.availability.planning ? '计划可用' : '计划不可用'} · {definition.availability.apply ? '实际执行可用' : '实际执行未开放'}</strong><p>{definition.metadata.impact}</p>{definition.availability.block_code && <code>{definition.availability.block_code}</code>}</div></div>
+      {definition && presentation && <div className="operation-composer">
+        <header className="operation-definition-header"><div><h2>{presentation.name}</h2><p>{presentation.description}</p></div><details className="operation-tech-details"><summary>技术详情</summary><code>{definition.metadata.id}</code>{definition.availability.block_code && <code>{definition.availability.block_code}</code>}<small>{definition.metadata.category} · v{definition.metadata.version}</small></details></header>
+        <dl className="operation-definition-facts"><div><dt>风险等级</dt><dd><span className={`risk risk-${definition.metadata.risk}`}>{riskLabel(definition.metadata.risk)}</span></dd></div><div><dt>适用系统</dt><dd>{definition.metadata.supported_systems.join(', ')}</dd></div><div><dt>影响范围</dt><dd>{presentation.impact}</dd></div></dl>
+        <div className="operation-boundary"><ShieldAlert size={18} /><div><strong>{definition.availability.planning ? '计划可用' : '计划不可用'} · {definition.availability.apply ? '实际执行可用' : '实际执行未开放'}</strong><p>{presentation.impact}</p></div></div>
         <label className="field"><span>执行节点</span><select aria-label="执行节点" value={nodeID} onChange={(event) => setNodeID(event.target.value)}><option value="">请选择在线节点</option>{nodes.map((node) => <option key={node.id} value={node.id} disabled={node.status !== 'online'}>{node.hostname} · {node.os} {node.os_version}{node.status !== 'online' ? ' · 离线' : ''}</option>)}</select></label>
         <section className="operation-fields" aria-label="操作参数">
-          {parameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}
+          {basicParameters.map((parameter) => <ParameterControl key={parameter.name} operationID={definition.metadata.id} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}
         </section>
+        {advancedParameters.length > 0 && <details className="operation-advanced-options"><summary>高级范围选项（可选）</summary><div className="operation-fields operation-advanced-fields">
+          {advancedParameters.map((parameter) => <ParameterControl key={parameter.name} operationID={definition.metadata.id} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}
+        </div></details>}
         {secretRequirements.length > 0 && <section className="secret-boundary"><strong>运行时秘密边界</strong><p>{definition.availability.secret_delivery ? '仅接受不透明引用标识，页面不保存秘密内容。' : '运行时秘密交付尚未开放；页面不接收密码、Token 或私钥。'}</p></section>}
         {requiredSecretUnavailable && <div className="notice-error">该操作需要运行时秘密，当前无法创建可执行计划。</div>}
         {unsupported && <div className="notice-error">目录包含当前客户端不支持的参数类型，已阻止提交。</div>}
@@ -100,15 +110,17 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
   </>
 }
 
-function ParameterControl({ parameter, values, setValue }: { parameter: OperationParameter; values: FormValues; setValue: (key: string, value: FormValue) => void }) {
+function ParameterControl({ operationID, parameter, values, setValue }: { operationID: string; parameter: OperationParameter; values: FormValues; setValue: (key: string, value: FormValue) => void }) {
+  const path = parameter.name
+  const label = operationParameterLabel(operationID, path, parameter.description || parameter.name)
   if (parameter.type === 'object') {
-    return <fieldset className="operation-object"><legend>{parameter.description || parameter.name}{parameter.required && <span>必填</span>}</legend>{(parameter.fields ?? []).map((field) => <FieldControl key={field.name} field={field} path={`${parameter.name}.${field.name}`} value={values[`${parameter.name}.${field.name}`]} setValue={setValue} />)}</fieldset>
+    return <fieldset className="operation-object"><legend>{label}{parameter.required && <span>必填</span>}</legend>{(parameter.fields ?? []).map((field) => <FieldControl key={field.name} operationID={operationID} field={field} path={`${parameter.name}.${field.name}`} value={values[`${parameter.name}.${field.name}`]} setValue={setValue} />)}</fieldset>
   }
-  return <FieldControl field={parameter} path={parameter.name} value={values[parameter.name]} setValue={setValue} />
+  return <FieldControl operationID={operationID} field={parameter} path={parameter.name} value={values[parameter.name]} setValue={setValue} />
 }
 
-function FieldControl({ field, path, value, setValue }: { field: OperationParameter | OperationParameterField; path: string; value?: FormValue; setValue: (key: string, value: FormValue) => void }) {
-  const label = field.description || field.name
+function FieldControl({ operationID, field, path, value, setValue }: { operationID: string; field: OperationParameter | OperationParameterField; path: string; value?: FormValue; setValue: (key: string, value: FormValue) => void }) {
+  const label = operationParameterLabel(operationID, path, field.description || field.name)
   if (field.type === 'boolean') return <label className="toggle-field"><input type="checkbox" checked={value === true} onChange={(event) => setValue(path, event.target.checked)} /><span>{label}</span></label>
   if (field.options?.length) return <label className="field"><span>{label}{field.required && ' *'}</span><select value={String(value ?? '')} onChange={(event) => setValue(path, event.target.value)}><option value="">请选择</option>{field.options.map((option) => <option key={option}>{option}</option>)}</select></label>
   return <label className="field"><span>{label}{field.required && ' *'}</span>{field.type === 'string[]' ? <textarea rows={3} value={String(value ?? '')} onChange={(event) => setValue(path, event.target.value)} /> : <input type={field.type === 'integer' ? 'number' : 'text'} step={field.type === 'integer' ? '1' : undefined} value={String(value ?? '')} onChange={(event) => setValue(path, event.target.value)} />}</label>

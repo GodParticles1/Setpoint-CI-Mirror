@@ -93,17 +93,20 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
             <button type="button" className={mode === 'bundles' ? 'active' : ''} onClick={() => setMode('bundles')}>集合 {selection.bundleIds.length}</button>
             <button type="button" className={mode === 'policies' ? 'active' : ''} onClick={() => setMode('policies')}>策略 {selection.policyIds.length}</button>
           </div>
-          {mode === 'checks' && <Selection title="独立检查项" count={selection.checkIds.length} actions={<>
-            <Button className="button-quiet" disabled={checkIDs.length === 0 || checkIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: checkIDs })}>全选</Button>
-            <Button className="button-quiet" disabled={visibleCheckIDs.length === 0 || visibleCheckIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: [...new Set([...selection.checkIds, ...visibleCheckIDs])] })}>选择当前筛选</Button>
-            <Button className="button-quiet" disabled={selection.checkIds.length === 0} onClick={() => setSelection({ ...selection, checkIds: [] })}>清空</Button>
-          </>}>
-            <div className="filter-bar" aria-label="检查项筛选">
-              <label className="search-field"><Search size={15} /><span className="sr-only">搜索检查项</span><input value={checkQuery} onChange={(event) => setCheckQuery(event.target.value)} placeholder="搜索检查项名称、ID 或说明" /></label>
-              <label><span>风险</span><select aria-label="检查风险" value={checkRisk} onChange={(event) => setCheckRisk(event.target.value as CheckRiskFilter)}><option value="all">全部</option><option value="low">低风险</option><option value="medium">中风险</option><option value="high">高风险</option><option value="critical">严重风险</option></select></label>
-              <label><span>系统</span><select aria-label="检查系统" value={checkSystem} onChange={(event) => setCheckSystem(event.target.value)}><option value="all">全部</option>{checkSystems.map((system) => <option key={system} value={system}>{system}</option>)}</select></label>
-              <label><span>分类</span><select aria-label="检查分类" value={checkCategory} onChange={(event) => setCheckCategory(event.target.value)}><option value="all">全部</option>{checkCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
-              <span className="filter-count">显示 {visibleChecks.length} / {definitions.length}</span>
+          {mode === 'checks' && <Selection title="独立检查项" count={selection.checkIds.length} className="selection-checks">
+            <div className="check-picker-toolbar" data-testid="check-picker-toolbar">
+              <div className="selection-actions">
+                <Button className="button-quiet" disabled={checkIDs.length === 0 || checkIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: checkIDs })}>全选</Button>
+                <Button className="button-quiet" disabled={visibleCheckIDs.length === 0 || visibleCheckIDs.every((id) => selection.checkIds.includes(id))} onClick={() => setSelection({ ...selection, checkIds: [...new Set([...selection.checkIds, ...visibleCheckIDs])] })}>选择当前筛选</Button>
+                <Button className="button-quiet" disabled={selection.checkIds.length === 0} onClick={() => setSelection({ ...selection, checkIds: [] })}>清空</Button>
+              </div>
+              <div className="filter-bar" aria-label="检查项筛选">
+                <label className="search-field"><Search size={15} /><span className="sr-only">搜索检查项</span><input value={checkQuery} onChange={(event) => setCheckQuery(event.target.value)} placeholder="搜索检查项名称、ID 或说明" /></label>
+                <label><span>风险</span><select aria-label="检查风险" value={checkRisk} onChange={(event) => setCheckRisk(event.target.value as CheckRiskFilter)}><option value="all">全部</option><option value="low">低风险</option><option value="medium">中风险</option><option value="high">高风险</option><option value="critical">严重风险</option></select></label>
+                <label><span>系统</span><select aria-label="检查系统" value={checkSystem} onChange={(event) => setCheckSystem(event.target.value)}><option value="all">全部</option>{checkSystems.map((system) => <option key={system} value={system}>{system}</option>)}</select></label>
+                <label><span>分类</span><select aria-label="检查分类" value={checkCategory} onChange={(event) => setCheckCategory(event.target.value)}><option value="all">全部</option>{checkCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+                <span className="filter-count">显示 {visibleChecks.length} / {definitions.length}</span>
+              </div>
             </div>
             {visibleChecks.length === 0 ? <EmptyState>没有符合当前筛选条件的检查项</EmptyState> : visibleChecks.map((definition) => <SelectRow key={definition.id} selected={selection.checkIds.includes(definition.id)} onClick={() => setSelection({ ...selection, checkIds: toggle(selection.checkIds, definition.id) })}><div><strong>{definition.name}</strong><small>{definition.category} · {definition.id}</small></div><span className="muted">{riskLabel(definition.risk)}</span></SelectRow>)}
           </Selection>}
@@ -121,8 +124,8 @@ export function RunsPage({ navigate }: { navigate: (path: string) => void }) {
   </>
 }
 
-function Selection({ title, count, actions, children }: { title: string; count: number; actions?: React.ReactNode; children: React.ReactNode }) {
-  return <fieldset className="selection"><legend>{title}<span>{count} 已选</span></legend>{actions && <div className="selection-actions">{actions}</div>}<div className="selection-list">{children}</div></fieldset>
+function Selection({ title, count, actions, className = '', children }: { title: string; count: number; actions?: React.ReactNode; className?: string; children: React.ReactNode }) {
+  return <fieldset className={`selection ${className}`.trim()}><legend>{title}<span>{count} 已选</span></legend>{actions && <div className="selection-actions">{actions}</div>}<div className="selection-list">{children}</div></fieldset>
 }
 
 function SelectRow({ selected, disabled = false, onClick, children }: { selected: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {

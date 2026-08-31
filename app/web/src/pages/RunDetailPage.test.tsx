@@ -138,7 +138,7 @@ describe('PWV1 remediation authority and execution', () => {
     expect(confirm.mock.calls[0][0]).toBe('operation-run-1')
     expect(confirm.mock.calls[0][1]).toBe(`sha256:${'b'.repeat(64)}`)
     expect(confirm.mock.calls[0][2]).toBeTruthy()
-    expect(screen.getByText('正在创建恢复点')).toBeTruthy()
+    expect(screen.getAllByText('正在创建恢复点').length).toBeGreaterThanOrEqual(1)
   })
 
   it.each([
@@ -153,7 +153,7 @@ describe('PWV1 remediation authority and execution', () => {
     vi.spyOn(api, 'createOperationRun').mockResolvedValue(repairOperationRunFixture(state))
     await openRepairWorkspace()
     fireEvent.click(screen.getByRole('button', { name: '按建议值修复' }))
-    expect(await screen.findByText(label)).toBeTruthy()
+    expect((await screen.findAllByText(label)).length).toBeGreaterThanOrEqual(1)
     if (state === 'creating_restore_point') expect(screen.getByText(/恢复点：已创建并验证/)).toBeTruthy()
     if (state === 'running') expect(screen.getByText(/Apply：已执行变更/)).toBeTruthy()
     if (state === 'succeeded') expect(screen.getByText(/Verify：通过/)).toBeTruthy()

@@ -2,10 +2,12 @@ import { ArrowLeft, Ban, CircleAlert, RefreshCw, Server, Wrench } from 'lucide-r
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, APIError } from '../api/client'
 import type { CancelReport, CheckItem, CheckRun, ItemStatus, OperationRun, RemediationOffer, TaskResource } from '../api/types'
+import { ExecutionActivity } from '../components/ExecutionActivity'
 import { Button, ErrorState, IconButton, Loading, PageHeader, PhaseBadge, StatusBadge } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { dateTime, isTerminal, operationTerminal, shortID } from '../lib/format'
 import { IdempotentOperation } from '../lib/idempotency'
+import { operationActivityLabel } from '../lib/operationPresentation'
 import { ResultCounts } from './DashboardPage'
 
 type ResultFilter = 'all' | ItemStatus | 'actionable' | 'manual_only'
@@ -91,6 +93,7 @@ export function RunDetailPage({ id, navigate }: { id: string; navigate: (path: s
     {actionError && <div className="notice-error">{actionError}</div>}
     {cancelReport && <div className={cancelReport.failed_tasks > 0 ? 'notice-error' : 'notice-info'} role="status">{cancelReport.failed_tasks > 0 ? '批次已部分处理' : '取消请求已处理'}：直接取消 {cancelReport.canceled_tasks}，执行中请求取消 {cancelReport.cancel_requested_tasks}，已结束 {cancelReport.already_terminal_tasks}，失败 {cancelReport.failed_tasks}。</div>}
     {resource.error && <div className="notice-error" role="status">自动刷新失败：{resource.error}。将在 {pollDelay(resource.failureCount) / 1000} 秒后重试。</div>}
+    {!isTerminal(run.status.phase) && <ExecutionActivity title="正在执行安全检查" status={checkActivityStatus(run)} active completed={run.status.counts.completed_tasks} total={run.status.counts.total_tasks} />}
     <section className={`result-attention result-attention-${attention.tone}`} aria-label="检查批次结论"><CircleAlert size={18} /><div><strong>{attention.title}</strong><p>{attention.detail}</p></div></section>
     <section className="run-summary"><div><span>状态</span><PhaseBadge phase={run.status.phase} /></div><div><span>节点</span><strong>{run.spec.node_ids.length}</strong></div><div><span>检查项</span><strong>{run.spec.check_ids.length}</strong></div><div><span>任务</span><strong>{run.status.counts.completed_tasks} / {run.status.counts.total_tasks}</strong></div><div className="run-results"><span>检查结论</span><ResultCounts summary={run.status.counts} /></div></section>
     {nodeResource.error && <div className="notice-info">节点名称暂未加载，结果仍使用节点 ID 展示。</div>}
@@ -248,6 +251,7 @@ function RepairItem({ row, nodeName, value, setValue, execution, onConfirm }: { 
     <p className="muted">风险：{offer.risk} · 回滚：{offer.supports_rollback ? '支持' : '不支持'} · 重启：{offer.requires_restart ? '需要' : '不需要'} · 连接：{offer.may_affect_connection ? '可能影响' : '无标记'} · 业务：{offer.may_affect_business ? '可能影响' : '无标记'}</p>
     {execution?.creating && <div className="notice-info">正在创建真实 OperationRun，并等待 Server 生成规划证据。</div>}
     {execution?.error && <div className="notice-error" role="alert">{execution.error}</div>}
+    {run && !operationTerminal(run.status.state) && <ExecutionActivity title="修复操作" status={operationActivityLabel(run.status.state)} active compact />}
     {run && <RepairExecutionView run={run} />}
     {canConfirm && <div className="operation-actions"><span>Server 已生成 plan_digest，可确认当前真实计划。</span><Button className="button-primary" disabled={execution?.confirming} onClick={onConfirm}>{execution?.confirming ? '正在确认' : '确认修复计划'}</Button></div>}
     <details><summary>技术详情</summary><p><code>{offer.operation_id || 'no operation binding'}</code></p>{run && <p>OperationRun <code>{shortID(run.metadata.id)}</code> · checkpoint <code>{run.status.checkpoint}</code></p>}</details>
@@ -341,6 +345,13 @@ function repairPollingTerminal(state: OperationRun['status']['state']) {
 function apiErrorText(error: unknown, fallback: string) {
   if (error instanceof APIError) return `${error.message}（${error.code}）`
   return fallback
+}
+
+function checkActivityStatus(run: CheckRun) {
+  if (run.status.phase === 'pending') return '等待 Agent'
+  if (run.status.counts.running_tasks > 0) return '执行中'
+  if (run.status.counts.pending_tasks > 0) return '等待 Agent'
+  return '正在汇总结果'
 }
 
 function resultAttention(phase: CheckRun['status']['phase'], counts: { unsafe: number; manual_review: number; error: number; not_applicable: number }) {
