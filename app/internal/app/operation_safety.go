@@ -18,6 +18,10 @@ type authoritativeOperationLedger interface {
 	clickhouse.LedgerStore
 }
 
+type authoritativeOperationRestoreStore interface {
+	clickhouse.RestoreStore
+}
+
 func (service *Service) ValidateOperationLease(ctx context.Context, agentID, taskID string, request protocol.OperationLeaseValidationRequest) (protocol.OperationLeaseValidationResponse, error) {
 	_, contract, err := service.authorizedOperationAction(ctx, agentID, taskID, request.Scope)
 	if err != nil {
@@ -106,13 +110,70 @@ func (service *Service) ListOperationLedger(ctx context.Context, agentID, taskID
 	return protocol.OperationLedgerListRunResponse{Entries: entries}, nil
 }
 
+func (service *Service) PutOperationRestore(ctx context.Context, agentID, taskID string, request protocol.OperationRestorePutRequest) error {
+	_, contract, err := service.authorizedClickHouseAction(ctx, agentID, taskID, request.Scope)
+	if err != nil {
+		return err
+	}
+	if request.Record.Key.RunID != contract.RunID {
+		return &ValidationError{Err: errors.New("restore record run ID differs from the authorized operation run")}
+	}
+	store, ok := service.nodes.(authoritativeOperationRestoreStore)
+	if !ok {
+		return ErrOperationAuthorityUnavailable
+	}
+	if err := store.PutRestore(ctx, request.Record); err != nil {
+		return fmt.Errorf("persist authoritative ClickHouse restore record: %w", err)
+	}
+	return nil
+}
+
+func (service *Service) GetOperationRestore(ctx context.Context, agentID, taskID string, request protocol.OperationRestoreGetRequest) (protocol.OperationRestoreGetResponse, error) {
+	_, contract, err := service.authorizedClickHouseAction(ctx, agentID, taskID, request.Scope)
+	if err != nil {
+		return protocol.OperationRestoreGetResponse{}, err
+	}
+	if request.Key.RunID != contract.RunID {
+		return protocol.OperationRestoreGetResponse{}, &ValidationError{Err: errors.New("restore key run ID differs from the authorized operation run")}
+	}
+	store, ok := service.nodes.(authoritativeOperationRestoreStore)
+	if !ok {
+		return protocol.OperationRestoreGetResponse{}, ErrOperationAuthorityUnavailable
+	}
+	record, found, err := store.GetRestore(ctx, request.Key)
+	if err != nil {
+		return protocol.OperationRestoreGetResponse{}, fmt.Errorf("read authoritative ClickHouse restore record: %w", err)
+	}
+	return protocol.OperationRestoreGetResponse{Record: record, Found: found}, nil
+}
+
+func (service *Service) ListOperationRestores(ctx context.Context, agentID, taskID string, request protocol.OperationRestoreListRunRequest) (protocol.OperationRestoreListRunResponse, error) {
+	_, contract, err := service.authorizedClickHouseAction(ctx, agentID, taskID, request.Scope)
+	if err != nil {
+		return protocol.OperationRestoreListRunResponse{}, err
+	}
+	store, ok := service.nodes.(authoritativeOperationRestoreStore)
+	if !ok {
+		return protocol.OperationRestoreListRunResponse{}, ErrOperationAuthorityUnavailable
+	}
+	records, err := store.ListRestores(ctx, contract.RunID)
+	if err != nil {
+		return protocol.OperationRestoreListRunResponse{}, fmt.Errorf("list authoritative ClickHouse restore records: %w", err)
+	}
+	return protocol.OperationRestoreListRunResponse{Records: records}, nil
+}
+
 func (service *Service) authorizedOperationLedgerAction(ctx context.Context, agentID, taskID string, scope protocol.OperationActionScope) (task.Resource, *task.OperationExecutionContract, error) {
+	return service.authorizedClickHouseAction(ctx, agentID, taskID, scope)
+}
+
+func (service *Service) authorizedClickHouseAction(ctx context.Context, agentID, taskID string, scope protocol.OperationActionScope) (task.Resource, *task.OperationExecutionContract, error) {
 	resource, contract, err := service.authorizedOperationAction(ctx, agentID, taskID, scope)
 	if err != nil {
 		return task.Resource{}, nil, err
 	}
-	if contract.Action != task.OperationActionApply && contract.Action != task.OperationActionRollback {
-		return task.Resource{}, nil, &ValidationError{Err: errors.New("ClickHouse migration ledger access is only available for destructive bounded actions")}
+	if contract.OperationID != clickhouse.OperationID {
+		return task.Resource{}, nil, &ValidationError{Err: errors.New("ClickHouse authority is unavailable for a different operation capability")}
 	}
 	return resource, contract, nil
 }
@@ -154,7 +215,7 @@ func (service *Service) authorizedOperationAction(ctx context.Context, agentID, 
 		return task.Resource{}, nil, &ConflictError{Err: fmt.Errorf("%w: operation authority requires running task", task.ErrInvalidTransition)}
 	}
 	if len(resource.Spec.SecretRefs) != 0 {
-		return task.Resource{}, nil, &ConflictError{Err: errors.New("secret_delivery_unavailable")}
+		return task.Resource{}, nil, &ConflictError{Err: ErrSecretDeliveryUnavailable}
 	}
 	contract := resource.Spec.OperationExecution
 	if err := task.ValidateOperationExecutionContract(*contract, resource.Spec.ContractDigest); err != nil {

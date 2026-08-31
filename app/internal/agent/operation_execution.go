@@ -11,7 +11,6 @@ import (
 
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
-	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/task"
 )
 
@@ -19,35 +18,30 @@ type OperationExecutionRunner interface {
 	Execute(context.Context, task.Resource) (task.OperationExecutionResult, error)
 }
 
-type OperationExecutionDefinitionFactory interface {
-	Definition(clickhouse.LedgerStore) (operation.OperationDefinition, error)
-}
-
 type operationExecutionRunner struct {
 	registry  *operation.Registry
-	restore   operation.RestorePointProvider
+	resolver  *OperationExecutionResolver
 	executor  executor.CommandExecutor
 	system    string
-	authority OperationAuthority
-	factory   OperationExecutionDefinitionFactory
+	authority OperationLeaseAuthority
 }
 
-func NewOperationExecutionRunner(registry *operation.Registry, restore operation.RestorePointProvider, commandExecutor executor.CommandExecutor, system string) (OperationExecutionRunner, error) {
-	return newOperationExecutionRunner(registry, restore, commandExecutor, system, nil, nil)
+func NewOperationExecutionRunner(registry *operation.Registry, resolver *OperationExecutionResolver, commandExecutor executor.CommandExecutor, system string) (OperationExecutionRunner, error) {
+	return newOperationExecutionRunner(registry, resolver, commandExecutor, system, nil)
 }
 
-func NewOperationExecutionRunnerWithAuthority(registry *operation.Registry, restore operation.RestorePointProvider, commandExecutor executor.CommandExecutor, system string, authority OperationAuthority, factory OperationExecutionDefinitionFactory) (OperationExecutionRunner, error) {
-	if authority == nil || factory == nil {
-		return nil, errors.New("server operation authority and execution definition factory are required")
+func NewOperationExecutionRunnerWithAuthority(registry *operation.Registry, resolver *OperationExecutionResolver, commandExecutor executor.CommandExecutor, system string, authority OperationLeaseAuthority) (OperationExecutionRunner, error) {
+	if authority == nil {
+		return nil, errors.New("server operation lease authority is required")
 	}
-	return newOperationExecutionRunner(registry, restore, commandExecutor, system, authority, factory)
+	return newOperationExecutionRunner(registry, resolver, commandExecutor, system, authority)
 }
 
-func newOperationExecutionRunner(registry *operation.Registry, restore operation.RestorePointProvider, commandExecutor executor.CommandExecutor, system string, authority OperationAuthority, factory OperationExecutionDefinitionFactory) (OperationExecutionRunner, error) {
-	if registry == nil || restore == nil || commandExecutor == nil || system == "" {
-		return nil, errors.New("operation registry, restore provider, executor and system are required")
+func newOperationExecutionRunner(registry *operation.Registry, resolver *OperationExecutionResolver, commandExecutor executor.CommandExecutor, system string, authority OperationLeaseAuthority) (OperationExecutionRunner, error) {
+	if registry == nil || resolver == nil || commandExecutor == nil || system == "" {
+		return nil, errors.New("operation registry, execution resolver, executor and system are required")
 	}
-	return &operationExecutionRunner{registry: registry, restore: restore, executor: commandExecutor, system: system, authority: authority, factory: factory}, nil
+	return &operationExecutionRunner{registry: registry, resolver: resolver, executor: commandExecutor, system: system, authority: authority}, nil
 }
 
 func (runner *operationExecutionRunner) Execute(ctx context.Context, resource task.Resource) (task.OperationExecutionResult, error) {
@@ -69,16 +63,22 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) {
 		return runner.fail(contract, "operation_target_mismatch", errors.New("bounded action targets differ from task specification"))
 	}
-	definition, ok := runner.registry.Definition(resource.Spec.OperationID)
+	registered, ok := runner.registry.Get(resource.Spec.OperationID)
 	if !ok {
-		return runner.fail(contract, "operation_capability_unavailable", fmt.Errorf("operation %q has no execution definition", resource.Spec.OperationID))
+		return runner.fail(contract, "operation_capability_unavailable", fmt.Errorf("operation %q is not registered", resource.Spec.OperationID))
 	}
+	resolved, err := runner.resolver.Resolve(ctx, resource)
+	if err != nil {
+		return runner.fail(contract, "operation_capability_unavailable", err)
+	}
+	definition := resolved.Definition
 	metadata := definition.Metadata()
 	digest, err := operation.CapabilityDigest(metadata)
 	if err != nil {
 		return runner.fail(contract, "operation_capability_invalid", err)
 	}
-	if metadata.ID != contract.OperationID || metadata.Version != resource.Spec.OperationVersion || digest != resource.Spec.CapabilityDigest {
+	registeredDigest, registeredErr := operation.CapabilityDigest(registered)
+	if metadata.ID != contract.OperationID || metadata.Version != resource.Spec.OperationVersion || digest != resource.Spec.CapabilityDigest || registeredErr != nil || registeredDigest != digest {
 		return runner.fail(contract, "operation_capability_mismatch", errors.New("registered operation does not match the frozen bounded-action contract"))
 	}
 
@@ -86,11 +86,17 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 
 	switch contract.Action {
 	case task.OperationActionCreateRestorePoint:
-		point, err := runner.restore.Create(ctx, operation.RestorePointRequest{OperationID: contract.OperationID, RunID: contract.RunID, Targets: append([]operation.Target(nil), contract.Targets...), Plan: contract.Plan})
+		point, err := resolved.RestoreProvider.Create(ctx, operation.RestorePointRequest{OperationID: contract.OperationID, RunID: contract.RunID, Targets: append([]operation.Target(nil), contract.Targets...), Plan: contract.Plan})
 		if err != nil {
 			return runner.fail(contract, "create_restore_point_failed", err)
 		}
-		verification, err := runner.restore.Verify(ctx, point)
+		if point.OperationID != contract.OperationID || point.RunID != contract.RunID || !reflect.DeepEqual(point.Targets, contract.Targets) {
+			return runner.fail(contract, "restore_provider_mismatch", errors.New("restore provider result does not match the frozen operation contract"))
+		}
+		if err := operation.ValidateRestorePoint(point, runnerNow()); err != nil {
+			return runner.fail(contract, "verify_restore_point_failed", err)
+		}
+		verification, err := resolved.RestoreProvider.Verify(ctx, point)
 		if err != nil {
 			return runner.fail(contract, "verify_restore_point_failed", err)
 		}
@@ -120,16 +126,16 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 		}
 		return result, nil
 	case task.OperationActionApply, task.OperationActionRollback:
-		return runner.executeDestructive(ctx, resource, runtime, result)
+		return runner.executeDestructive(ctx, resource, runtime, result, definition)
 	default:
 		return runner.fail(contract, "operation_action_unsupported", fmt.Errorf("unsupported operation action %q", contract.Action))
 	}
 }
 
-func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, resource task.Resource, runtime operation.RuntimeInput, result task.OperationExecutionResult) (task.OperationExecutionResult, error) {
+func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, resource task.Resource, runtime operation.RuntimeInput, result task.OperationExecutionResult, definition operation.OperationDefinition) (task.OperationExecutionResult, error) {
 	contract := resource.Spec.OperationExecution
-	if runner.authority == nil || runner.factory == nil {
-		return runner.fail(contract, "operation_authority_unavailable", errors.New("destructive bounded action requires server-authoritative lease and ledger adapters"))
+	if runner.authority == nil {
+		return runner.fail(contract, "operation_authority_unavailable", errors.New("destructive bounded action requires server-authoritative lease"))
 	}
 	scope, err := operationActionScope(resource)
 	if err != nil {
@@ -141,14 +147,6 @@ func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, 
 	}
 	if err := lease.Validate(runnerNow()); err != nil {
 		return runner.fail(contract, "operation_lease_authority_rejected", err)
-	}
-	ledger, err := newRemoteLedgerStore(ctx, runner.authority, resource.Metadata.ID, scope)
-	if err != nil {
-		return runner.fail(contract, "operation_ledger_authority_unavailable", err)
-	}
-	definition, err := runner.factory.Definition(ledger)
-	if err != nil {
-		return runner.fail(contract, "operation_ledger_authority_unavailable", err)
 	}
 	metadata := definition.Metadata()
 	digest, err := operation.CapabilityDigest(metadata)

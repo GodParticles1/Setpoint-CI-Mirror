@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"setpoint/internal/operation"
-	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/task"
 )
 
@@ -20,14 +19,6 @@ type failedApplyActionDefinition struct {
 
 func (definition *failedApplyActionDefinition) Apply(context.Context, operation.ApplyInput) (operation.ApplyResult, error) {
 	return definition.result, definition.err
-}
-
-type failedApplyDefinitionFactory struct {
-	definition *failedApplyActionDefinition
-}
-
-func (factory failedApplyDefinitionFactory) Definition(clickhouse.LedgerStore) (operation.OperationDefinition, error) {
-	return factory.definition, nil
 }
 
 func TestFailedApplyPreservesOnlyMeaningfulDefinitionEvidence(t *testing.T) {
@@ -79,10 +70,15 @@ func TestFailedApplyPreservesOnlyMeaningfulDefinitionEvidence(t *testing.T) {
 				ID: "lease-1", OwnerID: "run-1", Resources: []operation.LockResource{{Key: key}},
 				AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute),
 			}}
-			runner, err := NewOperationExecutionRunnerWithAuthority(
-				base.registry, restore, actionTestExecutor{}, "linux", authority,
-				failedApplyDefinitionFactory{definition: definition},
-			)
+			adapter, err := NewStaticOperationExecutionAdapter(metadata.ID, definition, restore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolver, err := NewOperationExecutionResolver(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner, err := NewOperationExecutionRunnerWithAuthority(base.registry, resolver, actionTestExecutor{}, "linux", authority)
 			if err != nil {
 				t.Fatal(err)
 			}

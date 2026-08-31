@@ -145,6 +145,14 @@ func validateJournalEntry(entry taskJournalEntry) error {
 			entry.Task.Spec.OperationID == "" || entry.Task.Spec.OperationVersion == "" || entry.Task.Spec.CapabilityDigest == "" {
 			return errors.New("operation task journal is missing frozen operation identity")
 		}
+	case task.KindOperationExecutionTask:
+		if entry.Task.Spec.PluginID != "" || entry.Task.Spec.Execution != nil || entry.Task.Spec.OperationExecution == nil ||
+			entry.Task.Spec.OperationID == "" || entry.Task.Spec.OperationVersion == "" || entry.Task.Spec.CapabilityDigest == "" {
+			return errors.New("operation execution journal is missing frozen bounded-action identity")
+		}
+		if err := task.ValidateOperationExecutionContract(*entry.Task.Spec.OperationExecution, entry.Task.Spec.ContractDigest); err != nil {
+			return fmt.Errorf("operation execution journal contract: %w", err)
+		}
 	default:
 		return fmt.Errorf("unsupported task journal kind %q", entry.Task.Kind)
 	}

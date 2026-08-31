@@ -87,9 +87,19 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	productOperations, err := app.NewProductOperations(baseOperations, store, leaseSupervisor)
+	executionResolver, err := app.NewProductExecutionResolver(
+		app.ProductExecutionCapability{OperationID: sysctlrepair.ID, ApplyAvailable: true},
+		app.ProductExecutionCapability{OperationID: clickhouse.OperationID, ApplyAvailable: true},
+	)
 	if err != nil {
 		return err
+	}
+	productOperations, err := app.NewProductOperations(baseOperations, store, leaseSupervisor, executionResolver)
+	if err != nil {
+		return err
+	}
+	if err := productOperations.ResumeOperationRuns(context.Background()); err != nil {
+		return fmt.Errorf("resume durable operation runs: %w", err)
 	}
 	productService, err := app.NewProductService(service, productOperations)
 	if err != nil {

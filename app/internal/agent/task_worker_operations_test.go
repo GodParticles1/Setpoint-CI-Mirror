@@ -9,6 +9,7 @@ import (
 
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
+	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/task"
 )
 
@@ -64,6 +65,43 @@ func TestTaskWorkerBlocksSecretRefWithoutRuntimeDelivery(t *testing.T) {
 	result := remote.submissions[0].OperationResult
 	if execution.callCount() != 0 || result == nil || result.State != operation.StateBlocked || result.Block == nil || result.Block.Code != "secret_delivery_unavailable" {
 		t.Fatalf("executor=%d result=%#v", execution.callCount(), result)
+	}
+}
+
+type countingOperationRunner struct{ calls int }
+
+func (runner *countingOperationRunner) Execute(context.Context, task.Resource) (task.OperationExecutionResult, error) {
+	runner.calls++
+	return task.OperationExecutionResult{}, nil
+}
+
+func TestTaskWorkerRestartResubmitsCompletedOperationActionWithoutReplay(t *testing.T) {
+	metadata := (&actionTestDefinition{metadata: clickhouse.OperationMetadata()}).Metadata()
+	resource := actionTask(t, metadata, task.OperationActionCreateRestorePoint)
+	point := operation.RestorePoint{ID: "rp-1", ProviderID: "test.restore", OperationID: metadata.ID, RunID: "run-1", Status: operation.RestorePointVerified, Targets: append([]operation.Target(nil), resource.Spec.Targets...), CreatedAt: time.Now().UTC(), Manifest: operation.Artifact{SchemaVersion: "test.restore.v1", Payload: json.RawMessage(`{}`)}}
+	submission := task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseSucceeded, OperationExecutionResult: &task.OperationExecutionResult{OperationID: metadata.ID, RunID: "run-1", Action: task.OperationActionCreateRestorePoint, RestorePoint: &point}}
+	journal, err := NewTaskJournal(filepath.Join(t.TempDir(), "task-journal.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Save(taskJournalEntry{Version: 1, State: journalCompleted, Task: resource, Submission: &submission}); err != nil {
+		t.Fatal(err)
+	}
+	registry := operation.NewRegistry()
+	if err := registry.Register(&actionTestDefinition{metadata: metadata}); err != nil {
+		t.Fatal(err)
+	}
+	remote := &planningWorkerRemote{resource: resource}
+	execution := &countingOperationRunner{}
+	worker, err := NewTaskWorkerWithControlledOperations(remote, "agent-1", "linux", testWorkerRegistry(t), registry, execution, &workerExecutor{}, journal, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.ProcessOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if execution.calls != 0 || len(remote.submissions) != 1 || remote.submissions[0].OperationExecutionResult == nil {
+		t.Fatalf("execution_calls=%d submissions=%#v", execution.calls, remote.submissions)
 	}
 }
 

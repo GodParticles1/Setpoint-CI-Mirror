@@ -13,23 +13,30 @@ import (
 	"setpoint/internal/task"
 )
 
-type OperationAuthority interface {
+type OperationLeaseAuthority interface {
 	ValidateLease(context.Context, string, protocol.OperationActionScope) (operation.LockLease, error)
+}
+
+type ClickHouseOperationAuthority interface {
+	OperationLeaseAuthority
 	PutLedger(context.Context, string, protocol.OperationActionScope, clickhouse.LedgerEntry) error
 	GetLedger(context.Context, string, protocol.OperationActionScope, clickhouse.LedgerKey) (clickhouse.LedgerEntry, bool, error)
 	ListLedger(context.Context, string, protocol.OperationActionScope) ([]clickhouse.LedgerEntry, error)
+	PutRestore(context.Context, string, protocol.OperationActionScope, clickhouse.RestoreRecord) error
+	GetRestore(context.Context, string, protocol.OperationActionScope, clickhouse.RestoreKey) (clickhouse.RestoreRecord, bool, error)
+	ListRestores(context.Context, string, protocol.OperationActionScope) ([]clickhouse.RestoreRecord, error)
 }
 
 type remoteLeaseHandle struct {
 	ctx       context.Context
-	authority OperationAuthority
+	authority OperationLeaseAuthority
 	taskID    string
 	scope     protocol.OperationActionScope
 	mu        sync.RWMutex
 	current   operation.LockLease
 }
 
-func newRemoteLeaseHandle(ctx context.Context, authority OperationAuthority, taskID string, scope protocol.OperationActionScope) (*remoteLeaseHandle, error) {
+func newRemoteLeaseHandle(ctx context.Context, authority OperationLeaseAuthority, taskID string, scope protocol.OperationActionScope) (*remoteLeaseHandle, error) {
 	if authority == nil || taskID == "" {
 		return nil, errors.New("server-authoritative lease adapter is required")
 	}
@@ -58,12 +65,12 @@ func (handle *remoteLeaseHandle) Validate(now time.Time) error {
 
 type remoteLedgerStore struct {
 	ctx       context.Context
-	authority OperationAuthority
+	authority ClickHouseOperationAuthority
 	taskID    string
 	scope     protocol.OperationActionScope
 }
 
-func newRemoteLedgerStore(ctx context.Context, authority OperationAuthority, taskID string, scope protocol.OperationActionScope) (*remoteLedgerStore, error) {
+func newRemoteLedgerStore(ctx context.Context, authority ClickHouseOperationAuthority, taskID string, scope protocol.OperationActionScope) (*remoteLedgerStore, error) {
 	if authority == nil || taskID == "" || scope.RunID == "" {
 		return nil, errors.New("server-authoritative ClickHouse ledger adapter is required")
 	}
@@ -91,6 +98,41 @@ func (store *remoteLedgerStore) ListRun(ctx context.Context, runID string) ([]cl
 	return store.authority.ListLedger(ctx, store.taskID, store.scope)
 }
 
+type remoteRestoreStore struct {
+	ctx       context.Context
+	authority ClickHouseOperationAuthority
+	taskID    string
+	scope     protocol.OperationActionScope
+}
+
+func newRemoteRestoreStore(ctx context.Context, authority ClickHouseOperationAuthority, taskID string, scope protocol.OperationActionScope) (*remoteRestoreStore, error) {
+	if authority == nil || taskID == "" || scope.RunID == "" {
+		return nil, errors.New("server-authoritative ClickHouse restore adapter is required")
+	}
+	return &remoteRestoreStore{ctx: ctx, authority: authority, taskID: taskID, scope: scope}, nil
+}
+
+func (store *remoteRestoreStore) PutRestore(ctx context.Context, record clickhouse.RestoreRecord) error {
+	if record.Key.RunID != store.scope.RunID {
+		return errors.New("restore record belongs to a different operation run")
+	}
+	return store.authority.PutRestore(ctx, store.taskID, store.scope, record)
+}
+
+func (store *remoteRestoreStore) GetRestore(ctx context.Context, key clickhouse.RestoreKey) (clickhouse.RestoreRecord, bool, error) {
+	if key.RunID != store.scope.RunID {
+		return clickhouse.RestoreRecord{}, false, errors.New("restore key belongs to a different operation run")
+	}
+	return store.authority.GetRestore(ctx, store.taskID, store.scope, key)
+}
+
+func (store *remoteRestoreStore) ListRestores(ctx context.Context, runID string) ([]clickhouse.RestoreRecord, error) {
+	if runID != store.scope.RunID {
+		return nil, errors.New("cross-run ClickHouse restore access is forbidden")
+	}
+	return store.authority.ListRestores(ctx, store.taskID, store.scope)
+}
+
 func operationActionScope(resource task.Resource) (protocol.OperationActionScope, error) {
 	if resource.Spec.OperationExecution == nil {
 		return protocol.OperationActionScope{}, errors.New("operation execution contract is required")
@@ -104,3 +146,4 @@ func operationActionScope(resource task.Resource) (protocol.OperationActionScope
 
 var _ operation.LeaseHandle = (*remoteLeaseHandle)(nil)
 var _ clickhouse.LedgerStore = (*remoteLedgerStore)(nil)
+var _ clickhouse.RestoreStore = (*remoteRestoreStore)(nil)

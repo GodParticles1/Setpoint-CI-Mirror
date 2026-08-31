@@ -1,70 +1,33 @@
-import type { OperationDefinition, OperationState } from '../api/types'
+import type { OperationDefinition, OperationParameter, OperationParameterField, OperationState } from '../api/types'
 
-type Presentation = {
-  name: string
-  description: string
-  category?: string
-  impact?: string
-  labels?: Record<string, string>
-  advanced?: string[]
-}
+type MetadataPresentation = OperationDefinition['metadata'] & { display_category?: string }
+type PresentableField = (OperationParameter | OperationParameterField) & { label?: string }
+type AvailabilityPresentation = OperationDefinition['availability'] & { block_reason?: string }
 
-const clickhouseID = 'operation.clickhouse.online_migration'
-const sysctlID = 'linux.network.icmp_redirects.runtime_repair'
-
-const presentations: Record<string, Presentation> = {
-  [clickhouseID]: {
-    name: 'ClickHouse 在线迁移',
-    description: 'Setpoint 会先发现源端与目标端、执行安全前置检查并生成迁移计划；只有满足安全条件并经过允许的后续动作才会继续。',
-    category: '数据迁移',
-    impact: '所有写入都必须经过已验证的受控操作计划；实际执行还要求目标满足安全提交条件，并拥有已验证的运行级恢复点。',
-    labels: {
-      source: '源 ClickHouse',
-      target: '目标 ClickHouse',
-      'source.host': '主机名或地址',
-      'target.host': '主机名或地址',
-      'source.port': 'Native 协议端口（常用 9000 / 9440）',
-      'target.port': 'Native 协议端口（常用 9000 / 9440）',
-      'source.user': '数据库用户名',
-      'target.user': '数据库用户名',
-      'source.secure': '使用安全 Native 协议',
-      'target.secure': '使用安全 Native 协议',
-      database: '待迁移数据库',
-      tables: '待迁移表',
-      time_column: '事件时间列（可选）',
-      start_time: '时间范围开始（可选，RFC3339）',
-      end_time: '时间范围结束（可选，RFC3339）',
-    },
-    advanced: ['time_column', 'start_time', 'end_time'],
-  },
-  [sysctlID]: {
-    name: 'ICMP Redirect 运行时修复',
-    description: '根据已验证的检查结果修复 ICMP Redirect 运行时 sysctl；不会改写持久化配置。',
-    category: 'Linux 运行时修复',
-    impact: '仅修复当前运行时值，持久化配置保持不变。',
-  },
-}
+const advancedRangeParameters = new Set(['time_column', 'start_time', 'end_time'])
 
 export function operationPresentation(definition: OperationDefinition) {
-  const presentation = presentations[definition.metadata.id]
+  const metadata = definition.metadata as MetadataPresentation
   return {
-    name: presentation?.name ?? definition.metadata.name,
-    description: presentation?.description ?? definition.metadata.description,
-    category: presentation?.category ?? definition.metadata.category,
-    impact: presentation?.impact ?? definition.metadata.impact,
+    name: metadata.name,
+    description: metadata.description,
+    category: metadata.display_category?.trim() || metadata.category,
+    impact: metadata.impact,
   }
 }
 
-export function operationNameForID(id: string, fallback: string) {
-  return presentations[id]?.name ?? fallback
+export function operationParameterLabel(field: OperationParameter | OperationParameterField) {
+  const presentable = field as PresentableField
+  return presentable.label?.trim() || presentable.description?.trim() || presentable.name
 }
 
-export function operationParameterLabel(operationID: string, path: string, fallback: string) {
-  return presentations[operationID]?.labels?.[path] ?? fallback
+export function operationParameterAdvanced(parameter: OperationParameter) {
+  return !parameter.required && advancedRangeParameters.has(parameter.name)
 }
 
-export function operationParameterAdvanced(operationID: string, parameterName: string) {
-  return presentations[operationID]?.advanced?.includes(parameterName) ?? false
+export function operationBlockReason(definition: OperationDefinition) {
+  const availability = definition.availability as AvailabilityPresentation
+  return availability.block_reason?.trim() || ''
 }
 
 export function operationActivityLabel(state: OperationState) {

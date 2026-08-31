@@ -70,6 +70,10 @@ func (store *Store) ContinueOperationRun(
 	if nextTask.Spec.OperationExecution.RunID != runID || nextTask.Spec.OperationExecution.OperationID != current.Spec.OperationID {
 		return operationrun.Resource{}, errors.New("operation continuation task does not match the durable run")
 	}
+	expectedTargets := operationRunExecutionTargets(current)
+	if !reflect.DeepEqual(nextTask.Spec.Targets, expectedTargets) || !reflect.DeepEqual(nextTask.Spec.OperationExecution.Targets, expectedTargets) {
+		return operationrun.Resource{}, errors.New("operation continuation task targets do not match the durable plan")
+	}
 	if journal.RunID != runID || journal.State != state || journal.Checkpoint != checkpoint || !journal.At.Equal(at) {
 		return operationrun.Resource{}, errors.New("operation continuation journal does not match the Server-selected transition")
 	}

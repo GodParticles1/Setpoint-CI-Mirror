@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"setpoint/internal/operation"
-	"setpoint/internal/operation/sysctlrepair"
 	"setpoint/internal/operationrun"
 	"setpoint/internal/protocol"
 	"setpoint/internal/task"
@@ -30,17 +29,18 @@ type productLeaseSupervisor interface {
 }
 
 type ProductOperations struct {
-	base  *OperationsService
-	runs  productOperationRepository
-	lease productLeaseSupervisor
-	now   func() time.Time
+	base      *OperationsService
+	runs      productOperationRepository
+	lease     productLeaseSupervisor
+	execution *ProductExecutionResolver
+	now       func() time.Time
 }
 
-func NewProductOperations(base *OperationsService, runs productOperationRepository, lease productLeaseSupervisor) (*ProductOperations, error) {
-	if base == nil || runs == nil || lease == nil {
-		return nil, errors.New("base operations service, operation repository and lease supervisor are required")
+func NewProductOperations(base *OperationsService, runs productOperationRepository, lease productLeaseSupervisor, execution *ProductExecutionResolver) (*ProductOperations, error) {
+	if base == nil || runs == nil || lease == nil || execution == nil {
+		return nil, errors.New("base operations service, operation repository, lease supervisor and execution resolver are required")
 	}
-	return &ProductOperations{base: base, runs: runs, lease: lease, now: time.Now}, nil
+	return &ProductOperations{base: base, runs: runs, lease: lease, execution: execution, now: time.Now}, nil
 }
 
 func (service *ProductOperations) ListOperations() ([]operationrun.DefinitionResource, error) {
@@ -49,7 +49,7 @@ func (service *ProductOperations) ListOperations() ([]operationrun.DefinitionRes
 		return nil, err
 	}
 	for index := range resources {
-		resources[index] = productOperationAvailability(resources[index])
+		resources[index] = service.productOperationAvailability(resources[index])
 	}
 	return resources, nil
 }
@@ -59,27 +59,37 @@ func (service *ProductOperations) GetOperation(id string) (operationrun.Definiti
 	if err != nil {
 		return operationrun.DefinitionResource{}, err
 	}
-	return productOperationAvailability(resource), nil
+	return service.productOperationAvailability(resource), nil
 }
 
-func productOperationAvailability(resource operationrun.DefinitionResource) operationrun.DefinitionResource {
-	if resource.Metadata.ID == sysctlrepair.ID {
-		resource.Availability.Apply = true
-		resource.Availability.BlockCode = ""
+func (service *ProductOperations) productOperationAvailability(resource operationrun.DefinitionResource) operationrun.DefinitionResource {
+	capability, ok := service.execution.Resolve(resource.Metadata.ID)
+	if !ok {
+		resource.Availability.Apply = false
+		resource.Availability.BlockCode = OperationExecutionUnavailableBlock
+		return resource
 	}
+	resource.Availability.Apply = capability.ApplyAvailable
+	resource.Availability.BlockCode = capability.BlockCode
 	return resource
 }
 
 func (service *ProductOperations) CreateOperationRun(ctx context.Context, request protocol.CreateOperationRunRequest) (operationrun.Resource, bool, error) {
-	return service.base.CreateOperationRun(ctx, request)
+	run, created, err := service.base.CreateOperationRun(ctx, request)
+	return service.decorateOperationRun(run), created, err
 }
 
 func (service *ProductOperations) GetOperationRun(ctx context.Context, id string) (operationrun.Resource, error) {
-	return service.base.GetOperationRun(ctx, id)
+	run, err := service.base.GetOperationRun(ctx, id)
+	return service.decorateOperationRun(run), err
 }
 
 func (service *ProductOperations) ListOperationRuns(ctx context.Context, options protocol.ListOptions) ([]operationrun.Resource, protocol.ListOptions, error) {
-	return service.base.ListOperationRuns(ctx, options)
+	runs, normalized, err := service.base.ListOperationRuns(ctx, options)
+	for index := range runs {
+		runs[index] = service.decorateOperationRun(runs[index])
+	}
+	return runs, normalized, err
 }
 
 func (service *ProductOperations) ConfirmOperationRun(ctx context.Context, id string, request protocol.ConfirmOperationRunRequest) (operationrun.Resource, error) {
@@ -90,8 +100,12 @@ func (service *ProductOperations) ConfirmOperationRun(ctx context.Context, id st
 	if err != nil {
 		return operationrun.Resource{}, err
 	}
-	if run.Spec.OperationID != sysctlrepair.ID {
-		return operationrun.Resource{}, &ConflictError{Err: ErrProductApplyDisabled}
+	capability, ok := service.execution.Resolve(run.Spec.OperationID)
+	if !ok || !capability.ApplyAvailable {
+		return operationrun.Resource{}, &ConflictError{Err: ErrOperationExecutionUnavailable}
+	}
+	if len(run.Spec.SecretRefs) != 0 {
+		return operationrun.Resource{}, &ConflictError{Err: ErrSecretDeliveryUnavailable}
 	}
 	if run.PlanDigest == "" || strings.TrimSpace(request.PlanDigest) != run.PlanDigest {
 		return operationrun.Resource{}, &ConflictError{Err: ErrOperationPlanDigestConflict}
@@ -112,9 +126,11 @@ func (service *ProductOperations) ConfirmOperationRun(ctx context.Context, id st
 			if _, err := service.ensureLease(ctx, run); err != nil {
 				return operationrun.Resource{}, err
 			}
-			return service.queueAction(ctx, run, run.Status.TaskID, task.OperationActionCreateRestorePoint, operation.StateCreatingRestorePoint, "create_restore_point_queued")
-		case operation.StateCreatingRestorePoint, operation.StateRunning, operation.StateVerifying, operation.StateRollingBack:
-			return run, nil
+			queued, queueErr := service.queueAction(ctx, run, run.Status.TaskID, task.OperationActionCreateRestorePoint, operation.StateCreatingRestorePoint, "create_restore_point_queued")
+			return service.decorateOperationRun(queued), queueErr
+		case operation.StateCreatingRestorePoint, operation.StateRunning, operation.StateVerifying, operation.StateRollingBack,
+			operation.StateSucceeded, operation.StateRolledBack, operation.StateBlocked, operation.StateInterrupted, operation.StateRollbackFailed:
+			return service.decorateOperationRun(run), nil
 		default:
 			return operationrun.Resource{}, &ConflictError{Err: ErrOperationStateConflict}
 		}
@@ -132,7 +148,13 @@ func (service *ProductOperations) CancelOperationRun(ctx context.Context, id str
 	if run.Status.State == operation.StateCanceledBeforeApply {
 		_ = service.releaseLease(ctx, run)
 	}
-	return run, nil
+	return service.decorateOperationRun(run), nil
+}
+
+func (service *ProductOperations) decorateOperationRun(run operationrun.Resource) operationrun.Resource {
+	capability, ok := service.execution.Resolve(run.Spec.OperationID)
+	run.Status.ApplyAvailable = ok && capability.ApplyAvailable && len(run.Spec.SecretRefs) == 0
+	return run
 }
 
 // ContinueOperationRun is called only after the bounded action result is
@@ -142,8 +164,9 @@ func (service *ProductOperations) ContinueOperationRun(ctx context.Context, runI
 	if err != nil {
 		return err
 	}
-	if run.Spec.OperationID != sysctlrepair.ID {
-		return nil
+	capability, ok := service.execution.Resolve(run.Spec.OperationID)
+	if !ok || !capability.ApplyAvailable {
+		return ErrOperationExecutionUnavailable
 	}
 	if operation.Terminal(run.Status.State) {
 		_ = service.releaseLease(ctx, run)
@@ -221,13 +244,61 @@ func (service *ProductOperations) ContinueOperationRun(ctx context.Context, runI
 	return err
 }
 
+// ResumeOperationRuns reconstructs the exact durable Server checkpoint after
+// restart. It never replays an interrupted mutation and never creates more
+// than the deterministic next bounded action.
+func (service *ProductOperations) ResumeOperationRuns(ctx context.Context) error {
+	const pageSize = 100
+	for offset := 0; ; offset += pageSize {
+		runs, err := service.runs.ListOperationRuns(ctx, pageSize, offset)
+		if err != nil {
+			return err
+		}
+		for _, run := range runs {
+			capability, ok := service.execution.Resolve(run.Spec.OperationID)
+			if !ok || !capability.ApplyAvailable {
+				continue
+			}
+			switch run.Status.State {
+			case operation.StateQueued:
+				if _, err := service.ensureLease(ctx, run); err != nil {
+					return err
+				}
+				if _, err := service.advance(ctx, run, operation.StateAcquiringLock, "lease_acquired", "authoritative operation lease resumed after Server restart", nil); err != nil {
+					return err
+				}
+			case operation.StateAcquiringLock:
+				if _, err := service.ensureLease(ctx, run); err != nil {
+					return err
+				}
+				if _, err := service.queueAction(ctx, run, run.Status.TaskID, task.OperationActionCreateRestorePoint, operation.StateCreatingRestorePoint, "create_restore_point_queued"); err != nil {
+					return err
+				}
+			case operation.StateCreatingRestorePoint, operation.StateRunning, operation.StateVerifying, operation.StateRollingBack:
+				if err := service.ContinueOperationRun(ctx, run.Metadata.ID); err != nil {
+					return err
+				}
+			case operation.StateSucceeded, operation.StateRolledBack, operation.StateBlocked, operation.StateRollbackFailed:
+				if err := service.releaseLease(ctx, run); err != nil {
+					return err
+				}
+			case operation.StateInterrupted:
+				// An uncertain Apply outcome is reconciliation-only and is never replayed.
+			}
+		}
+		if len(runs) < pageSize {
+			return nil
+		}
+	}
+}
+
 func (service *ProductOperations) queueAction(ctx context.Context, run operationrun.Resource, completedTaskID string, action task.OperationAction, state operation.State, checkpoint string) (operationrun.Resource, error) {
 	if run.Plan == nil {
 		return operationrun.Resource{}, errors.New("operation run has no durable plan")
 	}
 	contract := task.OperationExecutionContract{
 		OperationID: run.Spec.OperationID, RunID: run.Metadata.ID, Action: action, PlanDigest: run.PlanDigest,
-		Targets: append([]operation.Target(nil), run.Spec.Targets...), Plan: *run.Plan,
+		Targets: operationExecutionTargets(run), Plan: *run.Plan,
 	}
 	switch action {
 	case task.OperationActionApply:
@@ -266,7 +337,7 @@ func (service *ProductOperations) queueAction(ctx context.Context, run operation
 		Spec: task.Spec{
 			NodeID: run.Spec.NodeID, OperationExecution: &frozen, ContractDigest: digest,
 			OperationID: run.Spec.OperationID, OperationVersion: run.Spec.OperationVersion, CapabilityDigest: run.Spec.CapabilityDigest,
-			Targets: append([]operation.Target(nil), run.Spec.Targets...), Parameters: append([]byte(nil), run.Spec.Parameters...), SecretRefs: append([]operation.SecretRef(nil), run.Spec.SecretRefs...),
+			Targets: append([]operation.Target(nil), frozen.Targets...), Parameters: append([]byte(nil), run.Spec.Parameters...), SecretRefs: append([]operation.SecretRef(nil), run.Spec.SecretRefs...),
 		},
 		Status: task.Status{Phase: task.PhasePending, UpdatedAt: at},
 	}
@@ -301,13 +372,45 @@ func (service *ProductOperations) nextJournalSequence(ctx context.Context, runID
 }
 
 func (service *ProductOperations) ensureLease(ctx context.Context, run operationrun.Resource) (operation.LockLease, error) {
+	targets := operationExecutionTargets(run)
 	if lease, found, err := service.lease.CurrentLeaseByOwner(ctx, run.Metadata.ID); err == nil && found {
+		resources := make([]operation.LockResource, 0, len(targets))
+		for _, target := range targets {
+			key, keyErr := operation.ResourceLockKey(target)
+			if keyErr != nil {
+				return operation.LockLease{}, keyErr
+			}
+			resources = append(resources, operation.LockResource{Key: key})
+		}
+		if err := operation.ValidateLeaseCoverage(lease, run.Metadata.ID, resources, service.now().UTC()); err == nil {
+			return lease, nil
+		}
+	}
+	if lease, err := service.lease.Resume(ctx, run.Metadata.ID, targets); err == nil {
 		return lease, nil
 	}
-	if lease, err := service.lease.Resume(ctx, run.Metadata.ID, run.Spec.Targets); err == nil {
-		return lease, nil
+	return service.lease.Acquire(ctx, run.Metadata.ID, targets)
+}
+
+func operationExecutionTargets(run operationrun.Resource) []operation.Target {
+	targets := make([]operation.Target, 0, len(run.Spec.Targets))
+	seen := make(map[operation.Target]struct{})
+	appendTarget := func(target operation.Target) {
+		if _, exists := seen[target]; exists {
+			return
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
 	}
-	return service.lease.Acquire(ctx, run.Metadata.ID, run.Spec.Targets)
+	for _, target := range run.Spec.Targets {
+		appendTarget(target)
+	}
+	if run.Plan != nil {
+		for _, step := range run.Plan.Steps {
+			appendTarget(step.Target)
+		}
+	}
+	return targets
 }
 
 func (service *ProductOperations) releaseLease(ctx context.Context, run operationrun.Resource) error {

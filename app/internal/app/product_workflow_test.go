@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"setpoint/internal/operation"
+	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/operation/sysctlrepair"
 	"setpoint/internal/operationrun"
 	"setpoint/internal/task"
@@ -76,6 +77,7 @@ type productWorkflowLease struct {
 	lease    operation.LockLease
 	releases int
 }
+
 func (lease *productWorkflowLease) Acquire(context.Context, string, []operation.Target) (operation.LockLease, error) {
 	return lease.lease, nil
 }
@@ -91,6 +93,10 @@ func (lease *productWorkflowLease) Release(context.Context, string) error {
 }
 
 func productWorkflowFixture(action task.OperationAction, phase task.Phase) (*ProductOperations, *productWorkflowRepo, *productWorkflowLease) {
+	return productWorkflowFixtureForOperation(sysctlrepair.ID, action, phase)
+}
+
+func productWorkflowFixtureForOperation(operationID string, action task.OperationAction, phase task.Phase) (*ProductOperations, *productWorkflowRepo, *productWorkflowLease) {
 	now := time.Date(2026, 8, 24, 4, 0, 0, 0, time.UTC)
 	runID := "run-1"
 	taskID := runID + ":" + string(action)
@@ -108,17 +114,32 @@ func productWorkflowFixture(action task.OperationAction, phase task.Phase) (*Pro
 	}[action]
 	run := operationrun.Resource{
 		Metadata: operationrun.Metadata{ID: runID},
-		Spec: operationrun.Spec{OperationID: sysctlrepair.ID, OperationVersion: "1.0.0", CapabilityDigest: "cap", NodeID: "node-1", Targets: targets, Parameters: []byte(`{"check_id":"net.ipv4.conf.all.accept_redirects.persisted","target_value":"runtime=0; persisted=0"}`)},
-		Status: operationrun.Status{State: state, Checkpoint: "action_" + string(action) + "_" + string(phase), TaskID: taskID, UpdatedAt: now},
-		Plan: &plan, PlanDigest: "plan-digest", Impact: &operation.Impact{Risk: operation.RiskLow},
+		Spec:     operationrun.Spec{OperationID: operationID, OperationVersion: "1.0.0", CapabilityDigest: "cap", NodeID: "node-1", Targets: targets, Parameters: []byte(`{"check_id":"net.ipv4.conf.all.accept_redirects.persisted","target_value":"runtime=0; persisted=0"}`)},
+		Status:   operationrun.Status{State: state, Checkpoint: "action_" + string(action) + "_" + string(phase), TaskID: taskID, UpdatedAt: now},
+		Plan:     &plan, PlanDigest: "plan-digest", Impact: &operation.Impact{Risk: operation.RiskLow},
 		Execution: &operationrun.ExecutionSnapshot{RestorePoint: restore, Apply: apply, Rollback: rollback},
 	}
-	contract := task.OperationExecutionContract{SchemaVersion: task.OperationExecutionContractVersion, OperationID: sysctlrepair.ID, RunID: runID, Action: action, PlanDigest: run.PlanDigest, Targets: targets, Plan: plan}
-	current := task.Resource{APIVersion: "setpoint.io/v1", Kind: task.KindOperationExecutionTask, Metadata: task.Metadata{ID: taskID}, Spec: task.Spec{NodeID: "node-1", OperationID: sysctlrepair.ID, OperationExecution: &contract}, Status: task.Status{Phase: phase}}
+	contract := task.OperationExecutionContract{SchemaVersion: task.OperationExecutionContractVersion, OperationID: operationID, RunID: runID, Action: action, PlanDigest: run.PlanDigest, Targets: targets, Plan: plan}
+	current := task.Resource{APIVersion: "setpoint.io/v1", Kind: task.KindOperationExecutionTask, Metadata: task.Metadata{ID: taskID}, Spec: task.Spec{NodeID: "node-1", OperationID: operationID, OperationExecution: &contract}, Status: task.Status{Phase: phase}}
 	repo := &productWorkflowRepo{run: run, tasks: map[string]task.Resource{taskID: current}, journal: []operation.JournalEntry{{RunID: runID, Sequence: 1, State: state, Checkpoint: run.Status.Checkpoint, Message: "durable action result", At: now}}}
 	lease := &productWorkflowLease{lease: operation.LockLease{ID: "lease-1", OwnerID: runID, Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}}
-	service := &ProductOperations{runs: repo, lease: lease, now: func() time.Time { return now.Add(time.Minute) }}
+	execution, err := NewProductExecutionResolver(ProductExecutionCapability{OperationID: operationID, ApplyAvailable: true})
+	if err != nil {
+		panic(err)
+	}
+	service := &ProductOperations{runs: repo, lease: lease, execution: execution, now: func() time.Time { return now.Add(time.Minute) }}
 	return service, repo, lease
+}
+
+func TestClickHouseUsesSameGenericServerActionChain(t *testing.T) {
+	service, repo, _ := productWorkflowFixtureForOperation(clickhouse.OperationID, task.OperationActionCreateRestorePoint, task.PhaseSucceeded)
+	if err := service.ContinueOperationRun(context.Background(), "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	next := repo.tasks["run-1:apply"]
+	if repo.continuations != 1 || next.Spec.OperationExecution == nil || next.Spec.OperationExecution.OperationID != clickhouse.OperationID || next.Spec.OperationExecution.Action != task.OperationActionApply {
+		t.Fatalf("run=%#v next=%#v", repo.run.Status, next)
+	}
 }
 
 func TestProductContinuationCreatesAtMostOneDeterministicNextTask(t *testing.T) {

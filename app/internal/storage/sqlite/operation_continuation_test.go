@@ -95,6 +95,21 @@ func TestContinueOperationRunRejectsConflictingCompletedTask(t *testing.T) {
 	}
 }
 
+func TestContinueOperationRunRejectsTargetsOutsideDurablePlan(t *testing.T) {
+	fixture := prepareOperationExecutionFixture(t, task.OperationActionCreateRestorePoint)
+	defer fixture.store.Close()
+	if _, err := fixture.store.CompleteTask(fixture.ctx, fixture.nodeID, fixture.taskID, fixture.submission, fixture.reportedAt); err != nil {
+		t.Fatal(err)
+	}
+	next, journal, at := continuationApplyInput(t, fixture)
+	foreign := operation.Target{Kind: operation.TargetDataObject, Component: "clickhouse", Resource: "db.foreign"}
+	next.Spec.Targets = append(next.Spec.Targets, foreign)
+	next.Spec.OperationExecution.Targets = append(next.Spec.OperationExecution.Targets, foreign)
+	if _, err := fixture.store.ContinueOperationRun(fixture.ctx, fixture.runID, fixture.taskID, operation.StateRunning, "apply_queued", next, journal, at); err == nil {
+		t.Fatal("operation continuation accepted targets outside the durable plan")
+	}
+}
+
 func TestContinueOperationRunRollsBackTransactionOnRunUpdateFailure(t *testing.T) {
 	fixture := prepareOperationExecutionFixture(t, task.OperationActionCreateRestorePoint)
 	defer fixture.store.Close()

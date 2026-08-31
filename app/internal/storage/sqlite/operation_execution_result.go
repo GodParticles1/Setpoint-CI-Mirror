@@ -121,7 +121,8 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 	if run.Spec.NodeID != resource.Spec.NodeID {
 		return errors.New("operation execution task node does not match the authoritative operation run")
 	}
-	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) || !reflect.DeepEqual(run.Spec.Targets, resource.Spec.Targets) {
+	expectedTargets := operationRunExecutionTargets(run)
+	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) || !reflect.DeepEqual(expectedTargets, resource.Spec.Targets) {
 		return errors.New("operation execution task targets do not match the authoritative operation run")
 	}
 	if string(run.Spec.Parameters) != string(resource.Spec.Parameters) || !reflect.DeepEqual(run.Spec.SecretRefs, resource.Spec.SecretRefs) {
@@ -146,6 +147,27 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 		return errors.New("operation execution task rollback input does not match the authoritative operation run")
 	}
 	return nil
+}
+
+func operationRunExecutionTargets(run operationrun.Resource) []operation.Target {
+	targets := make([]operation.Target, 0, len(run.Spec.Targets))
+	seen := make(map[operation.Target]struct{})
+	appendTarget := func(target operation.Target) {
+		if _, exists := seen[target]; exists {
+			return
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+	for _, target := range run.Spec.Targets {
+		appendTarget(target)
+	}
+	if run.Plan != nil {
+		for _, step := range run.Plan.Steps {
+			appendTarget(step.Target)
+		}
+	}
+	return targets
 }
 
 func validateOperationExecutionResultShape(action task.OperationAction, phase task.Phase, result task.OperationExecutionResult) error {

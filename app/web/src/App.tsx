@@ -1,5 +1,4 @@
 import {
-  Activity,
   ClipboardCheck,
   Download,
   LayoutDashboard,
@@ -30,7 +29,7 @@ const navigation = [
   { path: '/nodes', label: '站点与节点', icon: Server },
   { path: '/checks', label: '检查项', icon: ShieldCheck },
   { path: '/runs', label: '检查批次', icon: ClipboardCheck },
-  { path: '/operations', label: '受控操作', icon: Wrench, meta: '规划' },
+  { path: '/operations', label: '受控操作', icon: Wrench },
   { path: '/deploy', label: 'Agent 部署', icon: Download },
   { path: '/settings', label: '设置', icon: Settings },
 ]
@@ -49,6 +48,10 @@ export function decodeRouteSegment(value: string) {
   } catch {
     return null
   }
+}
+
+function BrandMark({ className }: { className: string }) {
+  return <img className={className} src="/setpoint-mark.svg" alt="" aria-hidden="true" />
 }
 
 export function App() {
@@ -74,32 +77,24 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
-        <div className="brand"><span className="brand-mark"><Activity size={20} /></span><strong>Setpoint</strong></div>
+        <div className="brand"><BrandMark className="brand-mark" /><strong>Setpoint</strong></div>
         <nav aria-label="主导航">
-          {navigation.map(({ path: target, label, icon: Icon, meta }) => {
+          {navigation.map(({ path: target, label, icon: Icon }) => {
             const active = target === '/' ? path === '/' : path === target || path.startsWith(`${target}/`)
             return (
-              <a
-                key={target}
-                href={target}
-                className={active ? 'nav-active' : ''}
-                aria-current={active ? 'page' : undefined}
-                onClick={(event) => { event.preventDefault(); navigate(target) }}
-              >
-                <Icon size={18} /><span className="nav-label">{label}</span>{meta && <span className="nav-meta" aria-hidden="true">{meta}</span>}
+              <a key={target} href={target} className={active ? 'nav-active' : ''} aria-current={active ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate(target) }}>
+                <Icon size={18} /><span className="nav-label">{label}</span>
               </a>
             )
           })}
         </nav>
-        <div className="sidebar-foot"><span className="sidebar-foot-label">安全边界</span><strong>只读检查 · 受控操作规划</strong></div>
+        <div className="sidebar-foot"><span className="sidebar-foot-label">安全边界</span><strong>只读检查 · 受控操作</strong></div>
       </aside>
       {menuOpen && <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
       <div className="workspace">
         <div className="mobile-bar">
-          <IconButton label={menuOpen ? '关闭导航' : '打开导航'} onClick={() => setMenuOpen((value) => !value)}>
-            {menuOpen ? <X size={20} /> : <Menu size={20} />}
-          </IconButton>
-          <div className="mobile-brand"><strong>Setpoint</strong><span>{navigationLabel(path)}</span></div>
+          <IconButton label={menuOpen ? '关闭导航' : '打开导航'} onClick={() => setMenuOpen((value) => !value)}>{menuOpen ? <X size={20} /> : <Menu size={20} />}</IconButton>
+          <div className="mobile-brand"><BrandMark className="mobile-brand-mark" /><div><strong>Setpoint</strong><span>{navigationLabel(path)}</span></div></div>
         </div>
         <main>{renderPage(path, navigate)}</main>
       </div>

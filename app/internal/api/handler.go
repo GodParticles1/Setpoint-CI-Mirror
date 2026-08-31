@@ -56,6 +56,9 @@ type Service interface {
 	PutOperationLedger(context.Context, string, string, protocol.OperationLedgerPutRequest) error
 	GetOperationLedger(context.Context, string, string, protocol.OperationLedgerGetRequest) (protocol.OperationLedgerGetResponse, error)
 	ListOperationLedger(context.Context, string, string, protocol.OperationLedgerListRunRequest) (protocol.OperationLedgerListRunResponse, error)
+	PutOperationRestore(context.Context, string, string, protocol.OperationRestorePutRequest) error
+	GetOperationRestore(context.Context, string, string, protocol.OperationRestoreGetRequest) (protocol.OperationRestoreGetResponse, error)
+	ListOperationRestores(context.Context, string, string, protocol.OperationRestoreListRunRequest) (protocol.OperationRestoreListRunResponse, error)
 	RevokeAgentCredential(context.Context, string) (protocol.RevocationResponse, error)
 	Register(context.Context, protocol.RegistrationRequest) (protocol.RegistrationResponse, error)
 	Heartbeat(context.Context, string) (protocol.HeartbeatResponse, error)
@@ -157,6 +160,9 @@ func NewAgentHandler(service Service, logger *slog.Logger) (http.Handler, error)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/put", handler.putOperationLedger)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/get", handler.getOperationLedger)
 	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/ledger/list-run", handler.listOperationLedger)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/restore/put", handler.putOperationRestore)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/restore/get", handler.getOperationRestore)
+	mux.HandleFunc("POST /api/v1/agents/{agent_id}/tasks/{task_id}/operation-authority/restore/list-run", handler.listOperationRestores)
 	return handler.accessLog(mux), nil
 }
 
@@ -204,6 +210,44 @@ func (handler *Handler) listOperationLedger(writer http.ResponseWriter, request 
 		return
 	}
 	response, err := handler.service.ListOperationLedger(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) putOperationRestore(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationRestorePutRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	if err := handler.service.PutOperationRestore(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload); err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (handler *Handler) getOperationRestore(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationRestoreGetRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.service.GetOperationRestore(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) listOperationRestores(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.OperationRestoreListRunRequest
+	if !handler.decodeAuthenticatedAgentJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.service.ListOperationRestores(request.Context(), request.PathValue("agent_id"), request.PathValue("task_id"), payload)
 	if err != nil {
 		handler.handleServiceError(writer, err)
 		return
@@ -360,6 +404,10 @@ func serviceConflictCode(err error) string {
 		return "operation_plan_digest_conflict"
 	case errors.Is(err, app.ErrProductApplyDisabled):
 		return "product_apply_disabled"
+	case errors.Is(err, app.ErrOperationExecutionUnavailable):
+		return app.OperationExecutionUnavailableBlock
+	case errors.Is(err, app.ErrSecretDeliveryUnavailable):
+		return app.SecretDeliveryUnavailableBlock
 	case errors.Is(err, app.ErrOperationStateConflict):
 		return "operation_state_conflict"
 	case errors.Is(err, domain.ErrIdempotencyConflict):

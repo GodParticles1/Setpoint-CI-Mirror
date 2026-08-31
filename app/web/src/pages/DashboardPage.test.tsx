@@ -12,7 +12,7 @@ afterEach(() => {
 })
 
 describe('DashboardPage', () => {
-  it('prioritizes check errors, keeps node reachability visible and keeps Controlled Operations planning-only', async () => {
+  it('prioritizes check errors, keeps node reachability visible and describes capability-driven Controlled Operations', async () => {
     vi.spyOn(api, 'dashboard').mockResolvedValue({
       nodes_total: 3,
       nodes_online: 2,
@@ -39,8 +39,8 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('3 个检查错误需要处理')).toBeTruthy()
     expect(screen.getByText('在线节点')).toBeTruthy()
     expect(screen.getByText('未在线 Agent')).toBeTruthy()
-    expect(screen.getByText('受控操作 · 仅规划')).toBeTruthy()
-    expect(screen.getByText(/当前产品不会执行实际变更/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '受控操作' })).toBeTruthy()
+    expect(screen.getByText(/具体可用能力由所选 Operation 的 Server 状态决定/)).toBeTruthy()
     expect(screen.getByLabelText('安全 2，不安全 1，人工复核 1，检查错误 1，不适用 1')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /查看受控操作/ }))

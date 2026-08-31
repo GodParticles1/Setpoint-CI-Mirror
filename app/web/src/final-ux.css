@@ -117,6 +117,27 @@
 .operation-tech-details summary { cursor: pointer; }
 .operation-tech-details code { display: block; margin-top: 6px; }
 
+.brand-mark,
+.mobile-brand-mark {
+  display: block;
+  object-fit: contain;
+}
+.mobile-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mobile-brand-mark {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 6px;
+}
+.mobile-brand > div { min-width: 0; display: grid; gap: 1px; }
+.secret-boundary ul { margin: 7px 0 0; padding-left: 18px; }
+.secret-boundary li { margin-top: 3px; }
+
 @keyframes setpoint-executor-bob {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }

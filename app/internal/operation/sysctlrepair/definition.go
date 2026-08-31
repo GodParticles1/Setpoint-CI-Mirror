@@ -70,13 +70,13 @@ func NewDefinition(commandExecutor executor.CommandExecutor) (*Definition, error
 
 func Metadata() operation.Metadata {
 	return operation.Metadata{
-		ID: ID, Category: "Linux", Name: "ICMP Redirect runtime repair", Version: "1.0.0",
-		Description: "Repairs a fixed ICMP Redirect runtime sysctl only when the existing persistent configuration is already proven to resolve to 0.",
-		Risk: operation.RiskLow, Impact: "Changes one fixed runtime boolean sysctl; persistent configuration is verified but not modified.",
+		ID: ID, Category: "Linux 运行时修复", Name: "ICMP Redirect 运行时修复", Version: "1.0.0",
+		Description: "仅在持久化配置已明确解析为 0 时，将指定 ICMP Redirect 运行时 sysctl 修复为 0。",
+		Risk:        operation.RiskLow, Impact: "仅修改一个固定的运行时布尔 sysctl；已验证的持久化配置保持不变。",
 		SupportedSystems: []string{"linux"},
 		Parameters: []operation.Parameter{
-			{Name: "check_id", Type: "string", Description: "Persisted ICMP Redirect Check result being repaired", Required: true, Options: append([]string(nil), checkOptions...)},
-			{Name: "target_value", Type: "string", Description: "Frozen Check recommendation", Required: true, Options: []string{"runtime=0; persisted=0"}},
+			{Name: "check_id", Type: "string", Description: "要修复的持久化 ICMP Redirect 检查项", Required: true, Options: append([]string(nil), checkOptions...)},
+			{Name: "target_value", Type: "string", Description: "本次检查冻结的目标值", Required: true, Options: []string{"runtime=0; persisted=0"}},
 		},
 	}
 }
@@ -177,7 +177,7 @@ func (definition *Definition) Plan(_ context.Context, input operation.PlanInput)
 	}
 	return operation.Plan{
 		SchemaVersion: "setpoint.operation.plan.v1", Summary: fmt.Sprintf("Set runtime %s from %s to 0", state.Key, state.RuntimeValue),
-		Steps: []operation.PlanStep{{ID: "set-runtime-sysctl", Name: "Set fixed runtime sysctl", Target: input.Runtime.Targets[0], Action: "sysctl_set_runtime", Checkpoint: "runtime_sysctl_set", Writes: true, RetrySafe: true, RollbackAction: "restore_runtime_sysctl"}},
+		Steps:     []operation.PlanStep{{ID: "set-runtime-sysctl", Name: "Set fixed runtime sysctl", Target: input.Runtime.Targets[0], Action: "sysctl_set_runtime", Checkpoint: "runtime_sysctl_set", Writes: true, RetrySafe: true, RollbackAction: "restore_runtime_sysctl"}},
 		Execution: artifact,
 	}, nil
 }
@@ -188,9 +188,9 @@ func (definition *Definition) Impact(_ context.Context, input operation.ImpactIn
 		return operation.Impact{}, err
 	}
 	return operation.Impact{
-		Summary: "Change one fixed ICMP Redirect runtime boolean while leaving proven-safe persistence untouched",
-		Risk: operation.RiskLow,
-		Changes: []operation.Change{{Target: input.Runtime.Targets[0], Before: plan.BeforeRuntime, After: "0", Risk: "bounded runtime sysctl change"}},
+		Summary:          "Change one fixed ICMP Redirect runtime boolean while leaving proven-safe persistence untouched",
+		Risk:             operation.RiskLow,
+		Changes:          []operation.Change{{Target: input.Runtime.Targets[0], Before: plan.BeforeRuntime, After: "0", Risk: "bounded runtime sysctl change"}},
 		RequiresDowntime: false, RequiresWriteFence: false, EstimatedDuration: time.Second,
 	}, nil
 }
@@ -312,7 +312,9 @@ func (definition *Definition) observe(ctx context.Context, value parameters) (ob
 	return observedState{CheckID: value.CheckID, Key: key, RuntimeValue: runtimeValue, PersistedValue: resolution.Value, PersistedDigest: resolution.Digest}, nil
 }
 
-func stateArtifact(state observedState) (operation.Artifact, error) { return encodeArtifact(stateSchema, state) }
+func stateArtifact(state observedState) (operation.Artifact, error) {
+	return encodeArtifact(stateSchema, state)
+}
 
 func decodeState(artifact operation.Artifact) (observedState, error) {
 	if artifact.SchemaVersion != stateSchema {

@@ -17,7 +17,7 @@ type clientOperationAuthority struct {
 	agentID string
 }
 
-func NewClientOperationAuthority(client *Client, agentID string) (OperationAuthority, error) {
+func NewClientOperationAuthority(client *Client, agentID string) (ClickHouseOperationAuthority, error) {
 	if client == nil || agentID == "" {
 		return nil, ErrOperationAuthorityConfiguration
 	}
@@ -47,8 +47,25 @@ func (authority *clientOperationAuthority) ListLedger(ctx context.Context, taskI
 	return response.Entries, err
 }
 
+func (authority *clientOperationAuthority) PutRestore(ctx context.Context, taskID string, scope protocol.OperationActionScope, record clickhouse.RestoreRecord) error {
+	var response map[string]string
+	return authority.client.post(ctx, authority.path(taskID, "restore/put"), protocol.OperationRestorePutRequest{Scope: scope, Record: record}, &response, authority.client.Credential())
+}
+
+func (authority *clientOperationAuthority) GetRestore(ctx context.Context, taskID string, scope protocol.OperationActionScope, key clickhouse.RestoreKey) (clickhouse.RestoreRecord, bool, error) {
+	var response protocol.OperationRestoreGetResponse
+	err := authority.client.post(ctx, authority.path(taskID, "restore/get"), protocol.OperationRestoreGetRequest{Scope: scope, Key: key}, &response, authority.client.Credential())
+	return response.Record, response.Found, err
+}
+
+func (authority *clientOperationAuthority) ListRestores(ctx context.Context, taskID string, scope protocol.OperationActionScope) ([]clickhouse.RestoreRecord, error) {
+	var response protocol.OperationRestoreListRunResponse
+	err := authority.client.post(ctx, authority.path(taskID, "restore/list-run"), protocol.OperationRestoreListRunRequest{Scope: scope}, &response, authority.client.Credential())
+	return response.Records, err
+}
+
 func (authority *clientOperationAuthority) path(taskID, suffix string) string {
 	return "/api/v1/agents/" + url.PathEscape(authority.agentID) + "/tasks/" + url.PathEscape(taskID) + "/operation-authority/" + suffix
 }
 
-var _ OperationAuthority = (*clientOperationAuthority)(nil)
+var _ ClickHouseOperationAuthority = (*clientOperationAuthority)(nil)

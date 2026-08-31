@@ -18,9 +18,7 @@ export function DashboardPage({ navigate }: { navigate: (path: string) => void }
 
   return (
     <>
-      <PageHeader title="运行概览" description={`最近检查：${dateTime(summary.last_check_at)}`} actions={
-        <><IconButton label="刷新" onClick={resource.refresh}><RefreshCw size={17} /></IconButton><Button className="button-primary" onClick={() => navigate('/runs')}><Play size={16} />发起检查</Button></>
-      } />
+      <PageHeader title="运行概览" description={`最近检查：${dateTime(summary.last_check_at)}`} actions={<><IconButton label="刷新" onClick={resource.refresh}><RefreshCw size={17} /></IconButton><Button className="button-primary" onClick={() => navigate('/runs')}><Play size={16} />发起检查</Button></>} />
       <section className={`attention-panel attention-${attention.tone}`} aria-label="当前关注事项">
         <div className="attention-icon">{attention.tone === 'clear' ? <MonitorCheck size={20} /> : <CircleAlert size={20} />}</div>
         <div><span>当前关注</span><strong>{attention.title}</strong><p>{attention.detail}</p></div>
@@ -41,24 +39,13 @@ export function DashboardPage({ navigate }: { navigate: (path: string) => void }
         </article>
         <article className="work-area-card work-area-planning">
           <span className="work-area-icon"><Wrench size={19} /></span>
-          <div><span>Controlled Operations</span><h2>受控操作 · 仅规划</h2><p>查看可用能力、生成计划与影响评估。当前产品不会执行实际变更。</p></div>
+          <div><span>Controlled Operations</span><h2>受控操作</h2><p>发现、前置检查、计划、受控执行、验证与安全恢复；具体可用能力由所选 Operation 的 Server 状态决定。</p></div>
           <div className="work-area-actions"><Button onClick={() => navigate('/operations')}>查看受控操作<ArrowRight size={15} /></Button></div>
         </article>
       </section>
       <section className="section-block">
         <div className="section-heading"><div><h2>最近检查批次</h2><p>优先查看异常、人工复核和未完成批次</p></div><Button className="button-quiet" onClick={() => navigate('/runs')}>查看全部<ArrowRight size={15} /></Button></div>
-        {runs.length === 0 ? <EmptyState>尚未创建检查批次</EmptyState> : (
-          <div className="table-wrap"><table><thead><tr><th>批次</th><th>状态</th><th>节点 / 检查</th><th>结果</th><th>创建时间</th><th /></tr></thead><tbody>
-            {runs.map((run) => <tr key={run.metadata.id}>
-              <td><strong>{run.metadata.name || '未命名检查'}</strong><small title={run.metadata.id}>{shortID(run.metadata.id)}</small></td>
-              <td><PhaseBadge phase={run.status.phase} /></td>
-              <td>{run.spec.node_ids.length} / {run.spec.check_ids.length}</td>
-              <td><ResultCounts summary={run.status.counts} /></td>
-              <td>{dateTime(run.metadata.created_at)}</td>
-              <td><IconButton label={`查看批次 ${run.metadata.name || shortID(run.metadata.id)}`} onClick={() => navigate(`/runs/${encodeURIComponent(run.metadata.id)}`)}><ArrowRight size={17} /></IconButton></td>
-            </tr>)}
-          </tbody></table></div>
-        )}
+        {runs.length === 0 ? <EmptyState>尚未创建检查批次</EmptyState> : <div className="table-wrap"><table><thead><tr><th>批次</th><th>状态</th><th>节点 / 检查</th><th>结果</th><th>创建时间</th><th /></tr></thead><tbody>{runs.map((run) => <tr key={run.metadata.id}><td><strong>{run.metadata.name || '未命名检查'}</strong><small title={run.metadata.id}>{shortID(run.metadata.id)}</small></td><td><PhaseBadge phase={run.status.phase} /></td><td>{run.spec.node_ids.length} / {run.spec.check_ids.length}</td><td><ResultCounts summary={run.status.counts} /></td><td>{dateTime(run.metadata.created_at)}</td><td><IconButton label={`查看批次 ${run.metadata.name || shortID(run.metadata.id)}`} onClick={() => navigate(`/runs/${encodeURIComponent(run.metadata.id)}`)}><ArrowRight size={17} /></IconButton></td></tr>)}</tbody></table></div>}
       </section>
     </>
   )
@@ -78,11 +65,5 @@ function attentionSummary(summary: DashboardSummary) {
 
 export function ResultCounts({ summary }: { summary: DashboardSummary | { safe: number; unsafe: number; manual_review: number; error: number; not_applicable: number } }) {
   const label = `安全 ${summary.safe}，不安全 ${summary.unsafe}，人工复核 ${summary.manual_review}，检查错误 ${summary.error}，不适用 ${summary.not_applicable}`
-  return <div className="result-counts" aria-label={label}>
-    <span className="count-safe" title="安全"><i aria-hidden="true">安</i>{summary.safe}</span>
-    <span className="count-unsafe" title="不安全"><i aria-hidden="true">险</i>{summary.unsafe}</span>
-    <span className="count-review" title="人工复核"><i aria-hidden="true">审</i>{summary.manual_review}</span>
-    <span className="count-error" title="检查错误"><i aria-hidden="true">错</i>{summary.error}</span>
-    <span className="count-na" title="不适用"><i aria-hidden="true">免</i>{summary.not_applicable}</span>
-  </div>
+  return <div className="result-counts" aria-label={label}><span className="count-safe" title="安全"><i aria-hidden="true">安</i>{summary.safe}</span><span className="count-unsafe" title="不安全"><i aria-hidden="true">险</i>{summary.unsafe}</span><span className="count-review" title="人工复核"><i aria-hidden="true">审</i>{summary.manual_review}</span><span className="count-error" title="检查错误"><i aria-hidden="true">错</i>{summary.error}</span><span className="count-na" title="不适用"><i aria-hidden="true">免</i>{summary.not_applicable}</span></div>
 }

@@ -106,11 +106,35 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	factory, err := sysctlrepair.NewDefinitionFactory(sysctlDefinition)
+	sysctlAdapter, err := agent.NewStaticOperationExecutionAdapter(sysctlrepair.ID, sysctlDefinition, restoreProvider)
 	if err != nil {
 		return err
 	}
-	executionRunner, err := agent.NewOperationExecutionRunnerWithAuthority(operationRegistry, restoreProvider, commandExecutor, runtime.GOOS, authority, factory)
+	clickHouseStaging, err := clickhouse.NewSQLStagingController(queryClient)
+	if err != nil {
+		return err
+	}
+	clickHouseTransport, err := clickhouse.NewPipelineNativeTransport(commandExecutor)
+	if err != nil {
+		return err
+	}
+	clickHouseVerifier, err := clickhouse.NewQueryFingerprintVerifier(queryClient)
+	if err != nil {
+		return err
+	}
+	clickHouseObjects, err := clickhouse.NewSQLRestoreObjectController(queryClient)
+	if err != nil {
+		return err
+	}
+	clickHouseAdapter, err := agent.NewClickHouseOperationExecutionAdapter(queryClient, clickHouseStaging, clickHouseTransport, clickHouseVerifier, clickHouseObjects, authority)
+	if err != nil {
+		return err
+	}
+	executionResolver, err := agent.NewOperationExecutionResolver(sysctlAdapter, clickHouseAdapter)
+	if err != nil {
+		return err
+	}
+	executionRunner, err := agent.NewOperationExecutionRunnerWithAuthority(operationRegistry, executionResolver, commandExecutor, runtime.GOOS, authority)
 	if err != nil {
 		return err
 	}

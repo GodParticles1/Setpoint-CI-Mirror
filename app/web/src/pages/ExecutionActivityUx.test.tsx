@@ -43,7 +43,8 @@ describe('PWV1 execution activity', () => {
     vi.spyOn(api, 'operation').mockResolvedValue(operationDefinitionFixture)
     const view = render(<OperationRunDetailPage id={running.metadata.id} navigate={vi.fn()} />)
 
-    expect(await screen.findByText('正在执行受控变更')).toBeTruthy()
+    const activity = await screen.findByRole('region', { name: '受控操作进度' })
+    expect(within(activity).getByText('正在执行受控变更')).toBeTruthy()
     expect(screen.queryByRole('progressbar')).toBeNull()
 
     view.unmount()
