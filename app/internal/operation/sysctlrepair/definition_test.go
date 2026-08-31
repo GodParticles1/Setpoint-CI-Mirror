@@ -18,6 +18,7 @@ type fakeSysctlExecutor struct {
 	runtime          string
 	dropInPersistent string
 	legacyPersistent string
+	legacySymlink    bool
 	writes           []string
 }
 
@@ -41,11 +42,13 @@ func (fake *fakeSysctlExecutor) Execute(_ context.Context, command executor.Comm
 		kind, path := command.Args[0], command.Args[1]
 		exists := false
 		switch {
+		case kind == "-L" && path == fakeSysctlDropIn:
+			exists = fake.legacySymlink
 		case kind == "-L":
 			exists = false
 		case kind == "-d" && path == "/etc/sysctl.d":
 			exists = true
-		case kind == "-f" && path == fakeSysctlDropIn:
+		case kind == "-f" && path == fakeSysctlDropIn && !fake.legacySymlink:
 			exists = true
 		case kind == "-f" && path == "/etc/sysctl.conf" && fake.legacyPersistent != "":
 			exists = true
@@ -60,21 +63,89 @@ func (fake *fakeSysctlExecutor) Execute(_ context.Context, command executor.Comm
 		switch command.Args[3] {
 		case "/etc/sysctl.d":
 			return executor.Result{Stdout: "755|root|root\n", ExitCode: 0}, nil
-		case fakeSysctlDropIn, "/etc/sysctl.conf":
+		case fakeSysctlDropIn:
+			if fake.legacySymlink {
+				return executor.Result{Stdout: "777|root|root\n", ExitCode: 0}, nil
+			}
+			return executor.Result{Stdout: "644|root|root\n", ExitCode: 0}, nil
+		case "/etc/sysctl.conf":
 			return executor.Result{Stdout: "644|root|root\n", ExitCode: 0}, nil
 		}
 	}
 	if command.Name == "find" && reflect.DeepEqual(command.Args,
 		[]string{"/etc/sysctl.d", "-mindepth", "1", "-maxdepth", "1", "-name", "*.conf", "-printf", "%y|%p\\n"}) {
-		return executor.Result{Stdout: "f|" + fakeSysctlDropIn + "\n", ExitCode: 0}, nil
+		kind := "f"
+		if fake.legacySymlink {
+			kind = "l"
+		}
+		return executor.Result{Stdout: kind + "|" + fakeSysctlDropIn + "\n", ExitCode: 0}, nil
 	}
-	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", fakeSysctlDropIn}) {
+	if command.Name == "readlink" && reflect.DeepEqual(command.Args, []string{"--", fakeSysctlDropIn}) && fake.legacySymlink {
+		return executor.Result{Stdout: "../sysctl.conf\n", ExitCode: 0}, nil
+	}
+	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", fakeSysctlDropIn}) && !fake.legacySymlink {
 		return executor.Result{Stdout: fake.key + " = " + fake.dropInPersistent + "\n", ExitCode: 0}, nil
 	}
 	if command.Name == "cat" && reflect.DeepEqual(command.Args, []string{"--", "/etc/sysctl.conf"}) && fake.legacyPersistent != "" {
 		return executor.Result{Stdout: fake.key + " = " + fake.legacyPersistent + "\n", ExitCode: 0}, nil
 	}
 	return executor.Result{}, errors.New("unexpected command")
+}
+
+func TestPrecheckPreservesEligibilityWithSafeLegacyBridge(t *testing.T) {
+	checkID := "net.ipv4.conf.default.accept_redirects.persisted"
+	key := allowedChecks[checkID]
+	tests := []struct {
+		name        string
+		runtime     string
+		persistent  string
+		wantPassed  bool
+		wantFinding string
+		wantError   bool
+	}{
+		{name: "unsafe runtime is actionable", runtime: "1", persistent: "0", wantPassed: true},
+		{name: "compliant runtime needs no mutation", runtime: "0", persistent: "0", wantFinding: "RUNTIME_ALREADY_COMPLIANT"},
+		{name: "ambiguous persistent value fails closed", runtime: "1", persistent: "ambiguous", wantError: true},
+	}
+	for _, current := range tests {
+		t.Run(current.name, func(t *testing.T) {
+			commandExecutor := &fakeSysctlExecutor{
+				key: key, runtime: current.runtime, legacyPersistent: current.persistent, legacySymlink: true,
+			}
+			definition, err := NewDefinition(commandExecutor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parameters := []byte(`{"check_id":"` + checkID + `","target_value":"runtime=0; persisted=0"}`)
+			targets := []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
+			runtime := operation.RuntimeInput{Executor: commandExecutor, Parameters: parameters, System: "linux", Targets: targets}
+			discovery, discoverErr := definition.Discover(context.Background(), operation.DiscoverInput{Runtime: runtime})
+			if current.wantError {
+				if discoverErr == nil {
+					t.Fatal("ambiguous persistent evidence was accepted")
+				}
+				if len(commandExecutor.writes) != 0 {
+					t.Fatalf("mutation occurred: %v", commandExecutor.writes)
+				}
+				return
+			}
+			if discoverErr != nil {
+				t.Fatal(discoverErr)
+			}
+			precheck, precheckErr := definition.Precheck(context.Background(), operation.PrecheckInput{Runtime: runtime, Discovery: discovery})
+			if precheckErr != nil || precheck.Passed != current.wantPassed {
+				t.Fatalf("precheck=%#v err=%v", precheck, precheckErr)
+			}
+			if current.wantFinding != "" {
+				if len(precheck.Findings) != 1 || precheck.Findings[0].Code != current.wantFinding {
+					t.Fatalf("findings=%#v", precheck.Findings)
+				}
+			}
+			if len(commandExecutor.writes) != 0 {
+				t.Fatalf("precheck mutated runtime: %v", commandExecutor.writes)
+			}
+		})
+	}
 }
 
 type validLease struct{ lease operation.LockLease }

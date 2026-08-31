@@ -29,8 +29,11 @@ var sourceRoots = []sourceRoot{
 	{class: "lib", path: "/lib/sysctl.d"},
 }
 
+const legacyBridgeTarget = "/etc/sysctl.conf"
+
 func Collect(ctx context.Context, commandExecutor executor.CommandExecutor) (Snapshot, error) {
 	snapshot := Snapshot{}
+	candidateCount := 0
 	for _, root := range sourceRoots {
 		exists, issue, err := safeObject(ctx, commandExecutor, root.path, "-d")
 		if err != nil {
@@ -57,16 +60,27 @@ func Collect(ctx context.Context, commandExecutor executor.CommandExecutor) (Sna
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			if len(snapshot.files) >= maximumCandidates {
+			candidateCount++
+			if candidateCount > maximumCandidates {
 				snapshot.issues = append(snapshot.issues, "persistent sysctl source count exceeds the evaluation limit")
 				break
 			}
 			kind, candidate, ok := strings.Cut(strings.TrimSpace(line), "|")
-			if !ok || kind != "f" || path.Dir(candidate) != root.path || path.Ext(candidate) != ".conf" {
+			if !ok || path.Dir(candidate) != root.path || path.Ext(candidate) != ".conf" {
 				snapshot.issues = append(snapshot.issues, "a persistent sysctl source has an unsupported file type or path")
 				continue
 			}
-			file, issue, err := readSource(ctx, commandExecutor, candidate)
+			var file sourceFile
+			var issue string
+			var err error
+			switch kind {
+			case "f":
+				file, issue, err = readSource(ctx, commandExecutor, candidate)
+			case "l":
+				file, issue, err = readLegacyBridgeSource(ctx, commandExecutor, candidate)
+			default:
+				issue = "a persistent sysctl source has an unsupported file type or path"
+			}
 			if err != nil {
 				return Snapshot{}, err
 			}
@@ -130,22 +144,72 @@ func safeObject(ctx context.Context, commandExecutor executor.CommandExecutor, t
 	if err != nil || !exists {
 		return exists, "", err
 	}
-	result, runErr := commandExecutor.Execute(ctx, executor.Command{Name: "stat", Args: []string{"-c", "%a|%U|%G", "--", target}})
-	if err := commandFailure("inspect persistent sysctl source", result, runErr); err != nil {
-		if isTechnical(runErr) || result.StdoutTruncated || result.StderrTruncated {
-			return false, "", err
-		}
-		return false, "a persistent sysctl source could not be inspected", nil
+	mode, owner, group, issue, err := inspectSourceMetadata(ctx, commandExecutor, target)
+	if err != nil || issue != "" {
+		return false, issue, err
 	}
-	parts := strings.Split(strings.TrimSpace(result.Stdout), "|")
-	if len(parts) != 3 {
-		return false, "a persistent sysctl source has unsupported ownership metadata", nil
-	}
-	mode, modeErr := strconv.ParseUint(parts[0], 8, 32)
-	if modeErr != nil || parts[1] != "root" || parts[2] != "root" || mode&0o022 != 0 {
+	if owner != "root" || group != "root" || mode&0o022 != 0 {
 		return false, "a persistent sysctl source is not root-owned or is writable by group/other", nil
 	}
 	return true, "", nil
+}
+
+func inspectSourceMetadata(ctx context.Context, commandExecutor executor.CommandExecutor, target string) (uint64, string, string, string, error) {
+	result, runErr := commandExecutor.Execute(ctx, executor.Command{Name: "stat", Args: []string{"-c", "%a|%U|%G", "--", target}})
+	if err := commandFailure("inspect persistent sysctl source", result, runErr); err != nil {
+		if isTechnical(runErr) || result.StdoutTruncated || result.StderrTruncated {
+			return 0, "", "", "", err
+		}
+		return 0, "", "", "a persistent sysctl source could not be inspected", nil
+	}
+	parts := strings.Split(strings.TrimSpace(result.Stdout), "|")
+	if len(parts) != 3 {
+		return 0, "", "", "a persistent sysctl source has unsupported ownership metadata", nil
+	}
+	mode, modeErr := strconv.ParseUint(parts[0], 8, 32)
+	if modeErr != nil {
+		return 0, "", "", "a persistent sysctl source has unsupported ownership metadata", nil
+	}
+	return mode, parts[1], parts[2], "", nil
+}
+
+func readLegacyBridgeSource(ctx context.Context, commandExecutor executor.CommandExecutor, candidate string) (sourceFile, string, error) {
+	_, owner, group, issue, err := inspectSourceMetadata(ctx, commandExecutor, candidate)
+	if err != nil || issue != "" {
+		return sourceFile{}, issue, err
+	}
+	if owner != "root" || group != "root" {
+		return sourceFile{}, "a persistent sysctl source symlink is not root-owned", nil
+	}
+	result, runErr := commandExecutor.Execute(ctx, executor.Command{
+		Name: "readlink", Args: []string{"--", candidate}, OutputLimit: 4096,
+	})
+	if err := commandFailure("read persistent sysctl source symlink", result, runErr); err != nil {
+		if isTechnical(runErr) || result.StdoutTruncated || result.StderrTruncated {
+			return sourceFile{}, "", err
+		}
+		return sourceFile{}, "a persistent sysctl source symlink target could not be read", nil
+	}
+	linkTarget, ok := singleLinkTarget(result.Stdout)
+	if !ok {
+		return sourceFile{}, "a persistent sysctl source symlink target is malformed", nil
+	}
+	resolved := path.Clean(linkTarget)
+	if !path.IsAbs(linkTarget) {
+		resolved = path.Clean(path.Join(path.Dir(candidate), linkTarget))
+	}
+	if resolved != legacyBridgeTarget {
+		return sourceFile{}, "a persistent sysctl source symlink target is outside the supported legacy bridge", nil
+	}
+	return readRequiredSource(ctx, commandExecutor, legacyBridgeTarget)
+}
+
+func singleLinkTarget(output string) (string, bool) {
+	value := strings.TrimSuffix(output, "\n")
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return "", false
+	}
+	return value, true
 }
 
 func readSource(ctx context.Context, commandExecutor executor.CommandExecutor, target string) (sourceFile, string, error) {
@@ -153,6 +217,21 @@ func readSource(ctx context.Context, commandExecutor executor.CommandExecutor, t
 	if err != nil || issue != "" || !exists {
 		return sourceFile{}, issue, err
 	}
+	return readSourceContents(ctx, commandExecutor, target)
+}
+
+func readRequiredSource(ctx context.Context, commandExecutor executor.CommandExecutor, target string) (sourceFile, string, error) {
+	exists, issue, err := safeObject(ctx, commandExecutor, target, "-f")
+	if err != nil || issue != "" {
+		return sourceFile{}, issue, err
+	}
+	if !exists {
+		return sourceFile{}, "a persistent sysctl source symlink target is not a regular file", nil
+	}
+	return readSourceContents(ctx, commandExecutor, target)
+}
+
+func readSourceContents(ctx context.Context, commandExecutor executor.CommandExecutor, target string) (sourceFile, string, error) {
 	result, runErr := commandExecutor.Execute(ctx, executor.Command{Name: "cat", Args: []string{"--", target}})
 	if err := commandFailure("read persistent sysctl source", result, runErr); err != nil {
 		if isTechnical(runErr) || result.StdoutTruncated || result.StderrTruncated {
