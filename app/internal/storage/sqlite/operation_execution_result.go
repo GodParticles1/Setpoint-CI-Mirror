@@ -125,7 +125,7 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) || !reflect.DeepEqual(expectedTargets, resource.Spec.Targets) {
 		return errors.New("operation execution task targets do not match the authoritative operation run")
 	}
-	if string(run.Spec.Parameters) != string(resource.Spec.Parameters) || !reflect.DeepEqual(run.Spec.SecretRefs, resource.Spec.SecretRefs) {
+	if string(run.Spec.Parameters) != string(resource.Spec.Parameters) || !equalSecretRefs(run.Spec.SecretRefs, resource.Spec.SecretRefs) {
 		return errors.New("operation execution task inputs do not match the authoritative operation run")
 	}
 	if run.PlanDigest != contract.PlanDigest {
@@ -147,6 +147,18 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 		return errors.New("operation execution task rollback input does not match the authoritative operation run")
 	}
 	return nil
+}
+
+func equalSecretRefs(left, right []operation.SecretRef) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func operationRunExecutionTargets(run operationrun.Resource) []operation.Target {

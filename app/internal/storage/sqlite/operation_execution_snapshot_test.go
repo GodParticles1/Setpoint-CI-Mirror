@@ -132,14 +132,18 @@ func TestOperationExecutionSnapshotRejectsOutOfOrderFacts(t *testing.T) {
 }
 
 func prepareAwaitingOperationRun(t *testing.T, store *Store, now time.Time, runID, taskID string) {
+	prepareAwaitingOperationRunWithSecretRefs(t, store, now, runID, taskID, nil)
+}
+
+func prepareAwaitingOperationRunWithSecretRefs(t *testing.T, store *Store, now time.Time, runID, taskID string, secretRefs []operation.SecretRef) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := store.RegisterNode(ctx, domain.Registration{AgentID: "node-execution", Hostname: "node", OS: "linux", OSVersion: "test", Arch: "amd64", AgentVersion: "test", ReceivedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	spec := operationrun.Spec{OperationID: "operation.test", OperationVersion: "1.0.0", CapabilityDigest: "sha256:cap", NodeID: "node-execution", Targets: []operation.Target{{Kind: operation.TargetNode, NodeID: "node-execution"}}, Parameters: json.RawMessage(`{}`)}
+	spec := operationrun.Spec{OperationID: "operation.test", OperationVersion: "1.0.0", CapabilityDigest: "sha256:cap", NodeID: "node-execution", Targets: []operation.Target{{Kind: operation.TargetNode, NodeID: "node-execution"}}, Parameters: json.RawMessage(`{}`), SecretRefs: secretRefs}
 	run := operationrun.Resource{APIVersion: "setpoint.io/v1", Kind: "OperationRun", Metadata: operationrun.Metadata{ID: runID, IdempotencyKey: runID + "-idem", CreatedAt: now}, Spec: spec, Status: operationrun.Status{State: operation.StateDraft, Checkpoint: "planning_queued", TaskID: taskID, UpdatedAt: now}}
-	planningTask := task.Resource{APIVersion: "setpoint.io/v1", Kind: task.KindOperationPlanningTask, Metadata: task.Metadata{ID: taskID, IdempotencyKey: runID + ":planning", CreatedAt: now}, Spec: task.Spec{NodeID: spec.NodeID, OperationID: spec.OperationID, OperationVersion: spec.OperationVersion, CapabilityDigest: spec.CapabilityDigest, Targets: spec.Targets, Parameters: spec.Parameters}, Status: task.Status{Phase: task.PhasePending, UpdatedAt: now}}
+	planningTask := task.Resource{APIVersion: "setpoint.io/v1", Kind: task.KindOperationPlanningTask, Metadata: task.Metadata{ID: taskID, IdempotencyKey: runID + ":planning", CreatedAt: now}, Spec: task.Spec{NodeID: spec.NodeID, OperationID: spec.OperationID, OperationVersion: spec.OperationVersion, CapabilityDigest: spec.CapabilityDigest, Targets: spec.Targets, Parameters: spec.Parameters, SecretRefs: secretRefs}, Status: task.Status{Phase: task.PhasePending, UpdatedAt: now}}
 	if _, _, err := store.CreateOperationRun(ctx, run, planningTask); err != nil {
 		t.Fatal(err)
 	}

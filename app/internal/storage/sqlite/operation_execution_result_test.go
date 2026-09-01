@@ -546,6 +546,10 @@ type operationExecutionFixture struct {
 }
 
 func prepareOperationExecutionFixture(t *testing.T, action task.OperationAction) *operationExecutionFixture {
+	return prepareOperationExecutionFixtureWithSecretRefs(t, action, nil)
+}
+
+func prepareOperationExecutionFixtureWithSecretRefs(t *testing.T, action task.OperationAction, secretRefs []operation.SecretRef) *operationExecutionFixture {
 	t.Helper()
 	ctx := context.Background()
 	base := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
@@ -555,7 +559,7 @@ func prepareOperationExecutionFixture(t *testing.T, action task.OperationAction)
 	}
 	runID := "run-c31-" + string(action)
 	planningTaskID := "plan-c31-" + string(action)
-	prepareAwaitingOperationRun(t, store, base, runID, planningTaskID)
+	prepareAwaitingOperationRunWithSecretRefs(t, store, base, runID, planningTaskID, secretRefs)
 	point := testOperationRestorePoint(runID, base)
 	apply := operation.ApplyResult{Changed: true, Checkpoint: "apply_complete", State: operation.Artifact{SchemaVersion: "test.apply.v1", Payload: json.RawMessage(`{"changed":true}`)}}
 	rollback := operation.RollbackResult{Restored: true, Checkpoint: "rollback_complete", State: operation.Artifact{SchemaVersion: "test.rollback.v1", Payload: json.RawMessage(`{"restored":true}`)}}
