@@ -54,11 +54,16 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 	}
 	contract := resource.Spec.OperationExecution
 	result.OperationID, result.RunID, result.Action = contract.OperationID, contract.RunID, contract.Action
+	result.ParticipantNodeIDs = append([]string(nil), contract.ParticipantNodeIDs...)
+	result.StageID, result.StageIndex, result.ExecutorNodeID = contract.Stage.ID, contract.StageIndex, contract.Stage.ExecutorNodeID
 	if err := task.ValidateOperationExecutionContract(*contract, resource.Spec.ContractDigest); err != nil {
 		return runner.fail(contract, "operation_contract_invalid", err)
 	}
 	if contract.OperationID != resource.Spec.OperationID {
 		return runner.fail(contract, "operation_correlation_mismatch", errors.New("operation ID differs from task specification"))
+	}
+	if len(contract.ParticipantNodeIDs) > 0 && resource.Spec.NodeID != contract.Stage.ExecutorNodeID {
+		return runner.fail(contract, "operation_executor_mismatch", errors.New("bounded stage is addressed to a different Agent identity"))
 	}
 	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) {
 		return runner.fail(contract, "operation_target_mismatch", errors.New("bounded action targets differ from task specification"))
@@ -86,7 +91,7 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 
 	switch contract.Action {
 	case task.OperationActionCreateRestorePoint:
-		point, err := resolved.RestoreProvider.Create(ctx, operation.RestorePointRequest{OperationID: contract.OperationID, RunID: contract.RunID, Targets: append([]operation.Target(nil), contract.Targets...), Plan: contract.Plan})
+		point, err := resolved.RestoreProvider.Create(ctx, operation.RestorePointRequest{OperationID: contract.OperationID, RunID: contract.RunID, Targets: append([]operation.Target(nil), contract.Targets...), Plan: contract.Plan, Stage: executionStage(contract)})
 		if err != nil {
 			return runner.fail(contract, "create_restore_point_failed", err)
 		}
@@ -106,7 +111,7 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 		result.RestorePoint = &point
 		return result, nil
 	case task.OperationActionVerify:
-		verification, err := definition.Verify(ctx, operation.VerifyInput{Runtime: runtime, Plan: contract.Plan, Apply: *contract.Apply})
+		verification, err := definition.Verify(ctx, operation.VerifyInput{Runtime: runtime, Plan: contract.Plan, Stage: executionStage(contract), Apply: *contract.Apply})
 		if err != nil {
 			return runner.fail(contract, "verify_failed", err)
 		}
@@ -116,7 +121,7 @@ func (runner *operationExecutionRunner) Execute(ctx context.Context, resource ta
 		}
 		return result, nil
 	case task.OperationActionVerifyRollback:
-		verification, err := definition.VerifyRollback(ctx, operation.VerifyRollbackInput{Runtime: runtime, Plan: contract.Plan, Rollback: *contract.Rollback, RestorePoint: *contract.RestorePoint})
+		verification, err := definition.VerifyRollback(ctx, operation.VerifyRollbackInput{Runtime: runtime, Plan: contract.Plan, Stage: executionStage(contract), Rollback: *contract.Rollback, RestorePoint: *contract.RestorePoint})
 		if err != nil {
 			return runner.fail(contract, "verify_rollback_failed", err)
 		}
@@ -162,7 +167,7 @@ func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, 
 		if contract.Impact == nil || contract.RestorePoint == nil {
 			return runner.fail(contract, "operation_contract_invalid", errors.New("apply action requires frozen impact and restore point"))
 		}
-		apply, err := definition.Apply(ctx, operation.ApplyInput{Runtime: runtime, Plan: contract.Plan, Impact: *contract.Impact, RestorePoint: *contract.RestorePoint, Lease: lease})
+		apply, err := definition.Apply(ctx, operation.ApplyInput{Runtime: runtime, Plan: contract.Plan, Stage: executionStage(contract), Impact: *contract.Impact, RestorePoint: *contract.RestorePoint, Lease: lease})
 		if err != nil {
 			if meaningfulApplyFailureEvidence(apply) {
 				result.Apply = &apply
@@ -176,7 +181,7 @@ func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, 
 		if contract.Apply == nil || contract.RestorePoint == nil {
 			return runner.fail(contract, "operation_contract_invalid", errors.New("rollback action requires frozen apply result and restore point"))
 		}
-		rollback, err := definition.Rollback(ctx, operation.RollbackInput{Runtime: runtime, Plan: contract.Plan, Apply: *contract.Apply, RestorePoint: *contract.RestorePoint, Lease: lease})
+		rollback, err := definition.Rollback(ctx, operation.RollbackInput{Runtime: runtime, Plan: contract.Plan, Stage: executionStage(contract), Apply: *contract.Apply, RestorePoint: *contract.RestorePoint, Lease: lease})
 		if err != nil {
 			return runner.fail(contract, "rollback_failed", err)
 		}
@@ -185,6 +190,14 @@ func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, 
 	default:
 		return runner.fail(contract, "operation_action_unsupported", fmt.Errorf("unsupported destructive operation action %q", contract.Action))
 	}
+}
+
+func executionStage(contract *task.OperationExecutionContract) *operation.PlanStep {
+	if contract == nil || len(contract.ParticipantNodeIDs) == 0 {
+		return nil
+	}
+	stage := contract.Stage
+	return &stage
 }
 
 func meaningfulApplyFailureEvidence(result operation.ApplyResult) bool {
@@ -199,6 +212,8 @@ func (runner *operationExecutionRunner) fail(contract *task.OperationExecutionCo
 	result := task.OperationExecutionResult{}
 	if contract != nil {
 		result.OperationID, result.RunID, result.Action = contract.OperationID, contract.RunID, contract.Action
+		result.ParticipantNodeIDs = append([]string(nil), contract.ParticipantNodeIDs...)
+		result.StageID, result.StageIndex, result.ExecutorNodeID = contract.Stage.ID, contract.StageIndex, contract.Stage.ExecutorNodeID
 	}
 	return runner.failWithResult(result, code, err)
 }

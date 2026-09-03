@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestFreshSchemaV16HasNodeRetirementTombstone(t *testing.T) {
+func TestFreshSchemaV17HasNodeRetirementTombstone(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "setpoint.db"))
 	if err != nil {
@@ -16,14 +16,14 @@ func TestFreshSchemaV16HasNodeRetirementTombstone(t *testing.T) {
 	}
 	defer store.Close()
 	var version string
-	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != "16" {
+	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("schema version=%q err=%v", version, err)
 	}
 	assertColumnExists(t, ctx, store.db, "nodes", "retired_at")
 	assertForeignKeysClean(t, ctx, store.db)
 }
 
-func TestSchemaV15ToV16PreservesActiveNode(t *testing.T) {
+func TestSchemaV15ToLatestPreservesActiveNode(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "setpoint.db")
 	seedHistoricalSchema(t, ctx, path, 15)
@@ -42,7 +42,7 @@ func TestSchemaV15ToV16PreservesActiveNode(t *testing.T) {
 	}
 	store, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("migrate v15 to v16: %v", err)
+		t.Fatalf("migrate v15 to latest: %v", err)
 	}
 	defer store.Close()
 	if _, err := store.GetNode(ctx, "v15-active", time.Minute); err != nil {

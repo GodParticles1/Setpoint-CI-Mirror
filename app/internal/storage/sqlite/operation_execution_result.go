@@ -42,6 +42,9 @@ func prepareOperationExecutionResultTx(
 	if err := validateOperationExecutionResultShape(contract.Action, submission.Phase, *result); err != nil {
 		return preparedOperationExecutionResult{}, err
 	}
+	if result.RestorePoint != nil && (result.RestorePoint.OperationID != contract.OperationID || result.RestorePoint.RunID != contract.RunID || !reflect.DeepEqual(result.RestorePoint.Targets, contract.Targets)) {
+		return preparedOperationExecutionResult{}, errors.New("restore point result does not match its exact participant stage")
+	}
 	if result.OperationID != contract.OperationID || result.OperationID != resource.Spec.OperationID {
 		return preparedOperationExecutionResult{}, errors.New("operation execution result operation ID does not match the frozen task contract")
 	}
@@ -50,6 +53,12 @@ func prepareOperationExecutionResultTx(
 	}
 	if result.Action != contract.Action {
 		return preparedOperationExecutionResult{}, errors.New("operation execution result action does not match the frozen task contract")
+	}
+	if len(contract.ParticipantNodeIDs) > 0 && (result.StageID != contract.Stage.ID || result.StageIndex != contract.StageIndex || result.ExecutorNodeID != contract.Stage.ExecutorNodeID) {
+		return preparedOperationExecutionResult{}, errors.New("operation execution result stage does not match the frozen task contract")
+	}
+	if len(contract.ParticipantNodeIDs) > 0 && !reflect.DeepEqual(result.ParticipantNodeIDs, contract.ParticipantNodeIDs) {
+		return preparedOperationExecutionResult{}, errors.New("operation execution result participants do not match the frozen canonical participant set")
 	}
 
 	current, err := scanOperationRun(transaction.QueryRowContext(ctx,
@@ -66,13 +75,6 @@ func prepareOperationExecutionResultTx(
 	if err := validateOperationExecutionTaskRunCorrelation(resource, *contract, current); err != nil {
 		return preparedOperationExecutionResult{}, err
 	}
-	expectedState, err := operationActionState(contract.Action)
-	if err != nil {
-		return preparedOperationExecutionResult{}, err
-	}
-	if current.Status.State != expectedState {
-		return preparedOperationExecutionResult{}, fmt.Errorf("%w: stale %s result for operation state %s", task.ErrInvalidTransition, contract.Action, current.Status.State)
-	}
 
 	var sequence int64
 	var journalState, journalCheckpoint string
@@ -87,9 +89,19 @@ func prepareOperationExecutionResultTx(
 	if operation.State(journalState) != current.Status.State || journalCheckpoint != current.Status.Checkpoint {
 		return preparedOperationExecutionResult{}, fmt.Errorf("%w: operation run state/checkpoint diverges from journal tail", task.ErrInvalidTransition)
 	}
+	if current.Status.State == operation.StateCanceledBeforeApply {
+		return prepareCanceledOperationExecutionResult(resource, *contract, submission.Phase, *result, sequence, at)
+	}
+	expectedState, err := operationActionState(contract.Action)
+	if err != nil {
+		return preparedOperationExecutionResult{}, err
+	}
+	if current.Status.State != expectedState {
+		return preparedOperationExecutionResult{}, fmt.Errorf("%w: stale %s result for operation state %s", task.ErrInvalidTransition, contract.Action, current.Status.State)
+	}
 
-	snapshot := operationExecutionResultSnapshot(contract.Action, submission.Phase, *result)
-	checkpoint := operationActionResultCheckpoint(contract.Action, submission.Phase)
+	snapshot := operationExecutionResultSnapshot(*contract, submission.Phase, *result, at)
+	checkpoint := operationContractResultCheckpoint(*contract, submission.Phase)
 	journal := operation.JournalEntry{
 		RunID:      contract.RunID,
 		Sequence:   sequence + 1,
@@ -97,13 +109,53 @@ func prepareOperationExecutionResultTx(
 		Checkpoint: checkpoint,
 		Message:    fmt.Sprintf("operation action %s task %s reported %s", contract.Action, resource.Metadata.ID, submission.Phase),
 		At:         at,
-		Evidence:   operationActionJournalEvidence(resource.Metadata.ID, contract.Action, submission.Phase, result.Error),
+		Evidence:   operationActionJournalEvidence(resource.Metadata.ID, *contract, submission.Phase, result.Error),
 	}
 	if err := operation.ValidateJournalEntry(journal); err != nil {
 		return preparedOperationExecutionResult{}, err
 	}
 	return preparedOperationExecutionResult{
 		runID: contract.RunID, state: current.Status.State, checkpoint: checkpoint,
+		snapshot: snapshot, journal: journal,
+	}, nil
+}
+
+func prepareCanceledOperationExecutionResult(
+	resource task.Resource,
+	contract task.OperationExecutionContract,
+	phase task.Phase,
+	result task.OperationExecutionResult,
+	sequence int64,
+	at time.Time,
+) (preparedOperationExecutionResult, error) {
+	if resource.Status.Phase != task.PhaseCancelRequested || contract.Action != task.OperationActionCreateRestorePoint {
+		return preparedOperationExecutionResult{}, fmt.Errorf("%w: canceled operation run has no matching live pre-Apply task", task.ErrInvalidTransition)
+	}
+	checkpoint := "cancellation_converged"
+	message := "bounded pre-Apply task cancellation acknowledged"
+	snapshot := operationrun.ExecutionSnapshot{}
+	switch phase {
+	case task.PhaseSucceeded:
+		checkpoint = "canceled_before_apply_restore_point_retained"
+		message = "bounded RestorePoint completed before cancellation was observed; evidence retained without Apply"
+		snapshot = operationExecutionResultSnapshot(contract, phase, result, at)
+	case task.PhaseFailed:
+		checkpoint = "canceled_before_apply_failure_reconciled"
+		message = "bounded pre-Apply task failed while cancellation converged"
+	case task.PhaseCanceled:
+	default:
+		return preparedOperationExecutionResult{}, fmt.Errorf("%w: cancellation convergence requires a terminal bounded task result", task.ErrInvalidTransition)
+	}
+	journal := operation.JournalEntry{
+		RunID: contract.RunID, Sequence: sequence + 1, State: operation.StateCanceledBeforeApply,
+		Checkpoint: checkpoint, Message: message, At: at,
+		Evidence: operationActionJournalEvidence(resource.Metadata.ID, contract, phase, result.Error),
+	}
+	if err := operation.ValidateJournalEntry(journal); err != nil {
+		return preparedOperationExecutionResult{}, err
+	}
+	return preparedOperationExecutionResult{
+		runID: contract.RunID, state: operation.StateCanceledBeforeApply, checkpoint: checkpoint,
 		snapshot: snapshot, journal: journal,
 	}, nil
 }
@@ -118,10 +170,17 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 	if run.Spec.CapabilityDigest != resource.Spec.CapabilityDigest {
 		return errors.New("operation execution task capability digest does not match the authoritative operation run")
 	}
-	if run.Spec.NodeID != resource.Spec.NodeID {
+	if len(contract.ParticipantNodeIDs) > 0 {
+		if !reflect.DeepEqual(run.Spec.ParticipantNodeIDs, contract.ParticipantNodeIDs) || resource.Spec.NodeID != contract.Stage.ExecutorNodeID {
+			return errors.New("operation execution task participant or executor does not match the authoritative operation run")
+		}
+	} else if run.Spec.NodeID != resource.Spec.NodeID {
 		return errors.New("operation execution task node does not match the authoritative operation run")
 	}
 	expectedTargets := operationRunExecutionTargets(run)
+	if len(contract.ParticipantNodeIDs) > 0 {
+		expectedTargets = operationrun.StageTargets(run, contract.Stage)
+	}
 	if !reflect.DeepEqual(contract.Targets, resource.Spec.Targets) || !reflect.DeepEqual(expectedTargets, resource.Spec.Targets) {
 		return errors.New("operation execution task targets do not match the authoritative operation run")
 	}
@@ -137,16 +196,36 @@ func validateOperationExecutionTaskRunCorrelation(resource task.Resource, contra
 	if contract.Impact != nil && (run.Impact == nil || !reflect.DeepEqual(*run.Impact, *contract.Impact)) {
 		return errors.New("operation execution task impact does not match the authoritative operation run")
 	}
-	if contract.RestorePoint != nil && (run.Execution == nil || run.Execution.RestorePoint == nil || !reflect.DeepEqual(*run.Execution.RestorePoint, *contract.RestorePoint)) {
+	facts, factsErr := persistedStageFacts(run, contract.StageIndex)
+	if factsErr != nil && (contract.RestorePoint != nil || contract.Apply != nil || contract.Rollback != nil) {
+		return factsErr
+	}
+	if contract.RestorePoint != nil && (facts.RestorePoint == nil || !reflect.DeepEqual(*facts.RestorePoint, *contract.RestorePoint)) {
 		return errors.New("operation execution task restore point does not match the authoritative operation run")
 	}
-	if contract.Apply != nil && (run.Execution == nil || run.Execution.Apply == nil || !reflect.DeepEqual(*run.Execution.Apply, *contract.Apply)) {
+	if contract.Apply != nil && (facts.Apply == nil || !reflect.DeepEqual(*facts.Apply, *contract.Apply)) {
 		return errors.New("operation execution task apply input does not match the authoritative operation run")
 	}
-	if contract.Rollback != nil && (run.Execution == nil || run.Execution.Rollback == nil || !reflect.DeepEqual(*run.Execution.Rollback, *contract.Rollback)) {
+	if contract.Rollback != nil && (facts.Rollback == nil || !reflect.DeepEqual(*facts.Rollback, *contract.Rollback)) {
 		return errors.New("operation execution task rollback input does not match the authoritative operation run")
 	}
 	return nil
+}
+
+func persistedStageFacts(run operationrun.Resource, stageIndex int) (operationrun.StageExecutionSnapshot, error) {
+	if run.Execution != nil {
+		for _, stage := range run.Execution.Stages {
+			if stage.StageIndex == stageIndex {
+				return stage, nil
+			}
+		}
+	}
+	if len(run.Spec.ParticipantNodeIDs) <= 1 && run.Execution != nil {
+		return operationrun.StageExecutionSnapshot{StageIndex: 0, StageID: operationrun.SingleNodeStageID, ExecutorNodeID: run.Spec.NodeID,
+			RestorePoint: run.Execution.RestorePoint, Apply: run.Execution.Apply, Verification: run.Execution.Verification,
+			Rollback: run.Execution.Rollback, RollbackVerification: run.Execution.RollbackVerification}, nil
+	}
+	return operationrun.StageExecutionSnapshot{}, errors.New("operation execution stage facts are missing")
 }
 
 func equalSecretRefs(left, right []operation.SecretRef) bool {
@@ -288,20 +367,30 @@ func validateFailedApplyEvidence(result operation.ApplyResult) error {
 	return nil
 }
 
-func operationExecutionResultSnapshot(action task.OperationAction, phase task.Phase, result task.OperationExecutionResult) operationrun.ExecutionSnapshot {
+func operationExecutionResultSnapshot(contract task.OperationExecutionContract, phase task.Phase, result task.OperationExecutionResult, at time.Time) operationrun.ExecutionSnapshot {
+	action := contract.Action
+	stage := operationrun.StageExecutionSnapshot{StageIndex: contract.StageIndex, StageID: contract.Stage.ID, ExecutorNodeID: contract.Stage.ExecutorNodeID}
+	staged := len(contract.ParticipantNodeIDs) > 0
+	multiNode := len(contract.ParticipantNodeIDs) > 1
 	if phase == task.PhaseFailed {
 		switch action {
 		case task.OperationActionApply:
 			if result.Apply != nil {
-				return operationrun.ExecutionSnapshot{Apply: result.Apply}
+				stage.ApplyAt = at
+				stage.Apply = result.Apply
+				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Apply: result.Apply})
 			}
 		case task.OperationActionVerify:
 			if result.Verification != nil && !result.Verification.Passed {
-				return operationrun.ExecutionSnapshot{Verification: result.Verification}
+				stage.VerificationAt = at
+				stage.Verification = result.Verification
+				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Verification: result.Verification})
 			}
 		case task.OperationActionVerifyRollback:
 			if result.Verification != nil && !result.Verification.Passed {
-				return operationrun.ExecutionSnapshot{RollbackVerification: result.Verification}
+				stage.RollbackVerificationAt = at
+				stage.RollbackVerification = result.Verification
+				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{RollbackVerification: result.Verification})
 			}
 		}
 	}
@@ -310,18 +399,38 @@ func operationExecutionResultSnapshot(action task.OperationAction, phase task.Ph
 	}
 	switch action {
 	case task.OperationActionCreateRestorePoint:
-		return operationrun.ExecutionSnapshot{RestorePoint: result.RestorePoint}
+		stage.RestorePointAt = at
+		stage.RestorePoint = result.RestorePoint
+		return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{RestorePoint: result.RestorePoint})
 	case task.OperationActionApply:
-		return operationrun.ExecutionSnapshot{Apply: result.Apply}
+		stage.ApplyAt = at
+		stage.Apply = result.Apply
+		return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Apply: result.Apply})
 	case task.OperationActionVerify:
-		return operationrun.ExecutionSnapshot{Verification: result.Verification}
+		stage.VerificationAt = at
+		stage.Verification = result.Verification
+		return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Verification: result.Verification})
 	case task.OperationActionRollback:
-		return operationrun.ExecutionSnapshot{Rollback: result.Rollback}
+		stage.RollbackAt = at
+		stage.Rollback = result.Rollback
+		return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Rollback: result.Rollback})
 	case task.OperationActionVerifyRollback:
-		return operationrun.ExecutionSnapshot{RollbackVerification: result.Verification}
+		stage.RollbackVerificationAt = at
+		stage.RollbackVerification = result.Verification
+		return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{RollbackVerification: result.Verification})
 	default:
 		return operationrun.ExecutionSnapshot{}
 	}
+}
+
+func executionResultSnapshot(stage operationrun.StageExecutionSnapshot, staged, multiNode bool, scalar operationrun.ExecutionSnapshot) operationrun.ExecutionSnapshot {
+	if multiNode {
+		scalar = operationrun.ExecutionSnapshot{}
+	}
+	if staged {
+		scalar.Stages = []operationrun.StageExecutionSnapshot{stage}
+	}
+	return scalar
 }
 
 func operationActionState(action task.OperationAction) (operation.State, error) {
@@ -343,11 +452,25 @@ func operationActionResultCheckpoint(action task.OperationAction, phase task.Pha
 	return "action_" + string(action) + "_" + string(phase)
 }
 
-func operationActionJournalEvidence(taskID string, action task.OperationAction, phase task.Phase, failure *task.Failure) []operation.EvidenceRef {
+func operationContractResultCheckpoint(contract task.OperationExecutionContract, phase task.Phase) string {
+	checkpoint := operationActionResultCheckpoint(contract.Action, phase)
+	if len(contract.ParticipantNodeIDs) > 1 {
+		return fmt.Sprintf("stage_%d_%s", contract.StageIndex, checkpoint)
+	}
+	return checkpoint
+}
+
+func operationActionJournalEvidence(taskID string, contract task.OperationExecutionContract, phase task.Phase, failure *task.Failure) []operation.EvidenceRef {
 	evidence := []operation.EvidenceRef{
 		{ID: taskID, Kind: "operation_action_task"},
-		{ID: string(action), Kind: "operation_action"},
+		{ID: string(contract.Action), Kind: "operation_action"},
 		{ID: string(phase), Kind: "task_result_phase"},
+	}
+	if len(contract.ParticipantNodeIDs) > 0 {
+		evidence = append(evidence,
+			operation.EvidenceRef{ID: contract.Stage.ID, Kind: "operation_stage"},
+			operation.EvidenceRef{ID: contract.Stage.ExecutorNodeID, Kind: "operation_stage_executor"},
+		)
 	}
 	if failure != nil {
 		evidence = append(evidence, operation.EvidenceRef{ID: failure.Code, Kind: "operation_action_error_code"})

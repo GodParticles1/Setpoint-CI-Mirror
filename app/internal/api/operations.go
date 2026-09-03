@@ -84,3 +84,40 @@ func (handler *Handler) cancelOperationRun(writer http.ResponseWriter, request *
 	}
 	writeJSON(writer, http.StatusOK, run)
 }
+
+func (handler *Handler) confirmOperationBatch(writer http.ResponseWriter, request *http.Request) {
+	var payload protocol.ConfirmOperationBatchRequest
+	if !handler.decodeRequiredJSON(writer, request, &payload) {
+		return
+	}
+	response, err := handler.operations.ConfirmOperationBatch(request.Context(), payload)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) getOperationBatchConfirmation(writer http.ResponseWriter, request *http.Request) {
+	response, err := handler.operations.GetOperationBatchConfirmation(request.Context(), request.PathValue("batch_id"))
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (handler *Handler) listOperationBatchConfirmations(writer http.ResponseWriter, request *http.Request) {
+	options, ok := parseListOptions(writer, request)
+	if !ok {
+		return
+	}
+	confirmations, normalized, err := handler.operations.ListOperationBatchConfirmations(request.Context(), request.URL.Query().Get("check_run_id"), options)
+	if err != nil {
+		handler.handleServiceError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, protocol.OperationBatchConfirmationListResponse{
+		Confirmations: confirmations, Limit: normalized.Limit, Offset: normalized.Offset,
+	})
+}

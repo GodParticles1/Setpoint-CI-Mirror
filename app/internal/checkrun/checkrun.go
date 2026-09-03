@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"setpoint/internal/plugin"
 	"setpoint/internal/task"
 )
 
@@ -70,6 +71,7 @@ type RemediationOffer struct {
 	ExistingRecommendedValue   string                 `json:"existing_recommended_value"`
 	RecommendedValueForThisRun string                 `json:"recommended_value_for_this_run"`
 	RecommendationReason       string                 `json:"recommendation_reason"`
+	Disposition                string                 `json:"disposition"`
 	Availability               string                 `json:"availability"`
 	Editable                   bool                   `json:"editable"`
 	ParameterType              string                 `json:"parameter_type,omitempty"`
@@ -95,19 +97,21 @@ type Resource struct {
 	RemediationOffers []RemediationOffer `json:"remediation_offers,omitempty"`
 }
 
-func BuildRemediationOffers(run Resource) []RemediationOffer {
+func BuildRemediationOffers(run Resource, remediations map[string]plugin.RemediationMetadata) []RemediationOffer {
 	offers := make([]RemediationOffer, 0)
 	for _, resource := range run.Tasks {
 		if resource.Result == nil {
 			continue
 		}
 		for _, item := range resource.Result.Items {
-			supportsAutomaticFix, supportsRollback, operationID, parameters := approvedRepairCapability(item)
+			remediation, hasRemediation := remediations[item.ID]
+			supportsAutomaticFix, supportsRollback, operationID, parameters := approvedRepairCapability(item, remediation)
 			offer := RemediationOffer{
 				CheckRunID: run.Metadata.ID, TaskID: resource.Metadata.ID, CheckID: item.ID, NodeID: resource.Spec.NodeID,
 				CurrentValue: item.CurrentValue, ExistingRecommendedValue: item.RecommendedValue,
 				RecommendedValueForThisRun: item.RecommendedValue,
 				RecommendationReason:       strings.TrimSpace(item.Remediation),
+				Disposition:                string(remediation.Disposition),
 				Availability:               "manual_only", Editable: false,
 				SupportsAutomaticFix: supportsAutomaticFix, SupportsRollback: supportsRollback,
 				Risk: item.Risk, RequiresRestart: item.RequiresRestart,
@@ -126,6 +130,10 @@ func BuildRemediationOffers(run Resource) []RemediationOffer {
 				offer.BlockReason = "recommended value is unavailable"
 			case item.MayAffectConnection || item.MayAffectBusiness:
 				offer.BlockReason = "connection or business impact requires manual handling"
+			case !hasRemediation || plugin.ValidateRemediationMetadata(remediation) != nil:
+				offer.BlockReason = "remediation disposition is unavailable or invalid"
+			case remediation.Disposition != plugin.RemediationAutoSafe:
+				offer.BlockReason = "check remediation disposition is " + string(remediation.Disposition)
 			case operationID == "" || len(parameters) == 0:
 				offer.BlockReason = "no approved automatic repair capability matches this result"
 			case !supportsAutomaticFix:
@@ -143,7 +151,10 @@ func BuildRemediationOffers(run Resource) []RemediationOffer {
 	return offers
 }
 
-func approvedRepairCapability(item task.CheckItem) (bool, bool, string, map[string]string) {
+func approvedRepairCapability(item task.CheckItem, remediation plugin.RemediationMetadata) (bool, bool, string, map[string]string) {
+	if remediation.Disposition != plugin.RemediationAutoSafe || remediation.OperationID != icmpRedirectRuntimeRepairOperationID {
+		return false, false, "", nil
+	}
 	if item.Status != task.ItemUnsafe || item.RecommendedValue != "runtime=0; persisted=0" || item.CurrentValue != "runtime=1; persisted=0" || item.MayAffectConnection || item.MayAffectBusiness || item.RequiresRestart {
 		return false, false, "", nil
 	}
@@ -152,7 +163,7 @@ func approvedRepairCapability(item task.CheckItem) (bool, bool, string, map[stri
 		"net.ipv4.conf.default.accept_redirects.persisted",
 		"net.ipv4.conf.all.send_redirects.persisted",
 		"net.ipv4.conf.default.send_redirects.persisted":
-		return true, true, icmpRedirectRuntimeRepairOperationID, map[string]string{
+		return true, true, remediation.OperationID, map[string]string{
 			"check_id": item.ID, "target_value": item.RecommendedValue,
 		}
 	default:

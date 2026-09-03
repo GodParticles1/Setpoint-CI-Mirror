@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	"setpoint/internal/domain"
@@ -114,7 +115,8 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 	if run.Status.State == operation.StateCanceledBeforeApply {
 		return run, nil
 	}
-	if !operation.CanTransition(run.Status.State, operation.StateCanceledBeforeApply) {
+	containmentCancellation := run.Status.State == operation.StateCreatingRestorePoint && operationRunHasUncontainedApply(run)
+	if !containmentCancellation && !operation.CanTransition(run.Status.State, operation.StateCanceledBeforeApply) {
 		return operationrun.Resource{}, fmt.Errorf("%w: operation run cannot be canceled in state %s", task.ErrInvalidTransition, run.Status.State)
 	}
 	resource, err := scanTask(transaction.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, run.Status.TaskID))
@@ -122,6 +124,7 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 		return operationrun.Resource{}, err
 	}
 	timestamp := formatTime(at)
+	cancellationCheckpoint := run.Status.Checkpoint
 	if !task.Terminal(resource.Status.Phase) && resource.Status.Phase != task.PhaseCancelRequested {
 		nextPhase := task.PhaseCancelRequested
 		completedAt := any(nil)
@@ -130,6 +133,9 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 			nextPhase = task.PhaseCanceled
 			completedAt = timestamp
 			eventType = "canceled_before_claim"
+			if containmentCancellation && resource.Spec.OperationExecution != nil {
+				cancellationCheckpoint = operationContractResultCheckpoint(*resource.Spec.OperationExecution, task.PhaseCanceled)
+			}
 		} else if resource.Status.Phase != task.PhaseClaimed && resource.Status.Phase != task.PhaseRunning {
 			return operationrun.Resource{}, fmt.Errorf("%w: cannot cancel operation task in phase %s", task.ErrInvalidTransition, resource.Status.Phase)
 		}
@@ -146,11 +152,47 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 	var lastState, lastCheckpoint string
 	journalErr := transaction.QueryRowContext(ctx, `SELECT sequence, state, checkpoint FROM operation_journal WHERE run_id = ? ORDER BY sequence DESC LIMIT 1`, runID).
 		Scan(&lastSequence, &lastState, &lastCheckpoint)
-	switch {
-	case journalErr == nil:
+	if journalErr == nil {
 		if operation.State(lastState) != run.Status.State || lastCheckpoint != run.Status.Checkpoint {
 			return operationrun.Resource{}, fmt.Errorf("operation cancellation refused because run state/checkpoint diverges from journal tail: run=%s/%s journal=%s/%s", run.Status.State, run.Status.Checkpoint, lastState, lastCheckpoint)
 		}
+	} else if errors.Is(journalErr, sql.ErrNoRows) {
+		if executionStateRequiresJournal(run.Status.State) {
+			return operationrun.Resource{}, fmt.Errorf("operation cancellation refused because execution state %s has no durable journal", run.Status.State)
+		}
+	} else {
+		return operationrun.Resource{}, fmt.Errorf("read operation journal before cancellation: %w", journalErr)
+	}
+
+	if containmentCancellation {
+		if run.Status.Recovery == nil || run.Status.Recovery.Code != operationrun.RecoveryCancellationRequested {
+			entry := operation.JournalEntry{
+				RunID: runID, Sequence: lastSequence + 1, State: run.Status.State,
+				Checkpoint: cancellationCheckpoint, Message: "operation cancellation requested after a durable participant Apply; containment retained", At: at,
+			}
+			if err := operation.ValidateJournalEntry(entry); err != nil {
+				return operationrun.Resource{}, err
+			}
+			if err := appendOperationJournalEntryTx(ctx, transaction, entry); err != nil {
+				return operationrun.Resource{}, err
+			}
+			recovery := &operationrun.Recovery{Code: operationrun.RecoveryCancellationRequested, Checkpoint: cancellationCheckpoint, SafeNext: "rollback_applied_stages", ManualReview: false}
+			recoveryJSON, err := nullableJSON(recovery)
+			if err != nil {
+				return operationrun.Resource{}, err
+			}
+			if _, err := transaction.ExecContext(ctx, `UPDATE operation_runs SET checkpoint = ?, recovery_json = ?, updated_at = ? WHERE id = ?`,
+				cancellationCheckpoint, recoveryJSON, timestamp, runID); err != nil {
+				return operationrun.Resource{}, fmt.Errorf("persist contained operation cancellation request: %w", err)
+			}
+		}
+		if err := transaction.Commit(); err != nil {
+			return operationrun.Resource{}, fmt.Errorf("commit contained operation cancellation request: %w", err)
+		}
+		return store.GetOperationRun(ctx, runID)
+	}
+
+	if journalErr == nil {
 		entry := operation.JournalEntry{
 			RunID: runID, Sequence: lastSequence + 1, State: operation.StateCanceledBeforeApply,
 			Checkpoint: "canceled_before_apply", Message: "operation canceled before apply", At: at,
@@ -161,12 +203,6 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 		if err := appendOperationJournalEntryTx(ctx, transaction, entry); err != nil {
 			return operationrun.Resource{}, err
 		}
-	case errors.Is(journalErr, sql.ErrNoRows):
-		if executionStateRequiresJournal(run.Status.State) {
-			return operationrun.Resource{}, fmt.Errorf("operation cancellation refused because execution state %s has no durable journal", run.Status.State)
-		}
-	default:
-		return operationrun.Resource{}, fmt.Errorf("read operation journal before cancellation: %w", journalErr)
 	}
 
 	if _, err := transaction.ExecContext(ctx, `UPDATE operation_runs SET state = ?, checkpoint = ?,
@@ -177,6 +213,21 @@ func (store *Store) CancelOperationRun(ctx context.Context, runID string, at tim
 		return operationrun.Resource{}, fmt.Errorf("commit operation run cancellation: %w", err)
 	}
 	return store.GetOperationRun(ctx, runID)
+}
+
+func operationRunHasUncontainedApply(run operationrun.Resource) bool {
+	if run.Execution == nil {
+		return false
+	}
+	if run.Execution.Apply != nil && run.Execution.RollbackVerification == nil {
+		return true
+	}
+	for _, stage := range run.Execution.Stages {
+		if stage.Apply != nil && stage.RollbackVerification == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // SaveOperationExecutionSnapshot supplements immutable execution facts for the
@@ -245,12 +296,13 @@ func (store *Store) SaveOperationExecutionSnapshot(
 }
 
 func mergeOperationExecutionSnapshot(current *operationrun.ExecutionSnapshot, update operationrun.ExecutionSnapshot) (*operationrun.ExecutionSnapshot, error) {
-	if current == nil && update.RestorePoint == nil && update.Apply == nil && update.Verification == nil && update.Rollback == nil && update.RollbackVerification == nil {
+	if current == nil && update.RestorePoint == nil && update.Apply == nil && update.Verification == nil && update.Rollback == nil && update.RollbackVerification == nil && len(update.Stages) == 0 {
 		return nil, nil
 	}
 	merged := operationrun.ExecutionSnapshot{}
 	if current != nil {
 		merged = *current
+		merged.Stages = append([]operationrun.StageExecutionSnapshot(nil), current.Stages...)
 	}
 	if err := mergeOperationExecutionFact(&merged.RestorePoint, update.RestorePoint, "restore point"); err != nil {
 		return nil, err
@@ -267,7 +319,69 @@ func mergeOperationExecutionSnapshot(current *operationrun.ExecutionSnapshot, up
 	if err := mergeOperationExecutionFact(&merged.RollbackVerification, update.RollbackVerification, "rollback verification"); err != nil {
 		return nil, err
 	}
+	for _, stageUpdate := range update.Stages {
+		if err := mergeStageExecutionSnapshot(&merged.Stages, stageUpdate); err != nil {
+			return nil, err
+		}
+	}
 	return &merged, nil
+}
+
+func mergeStageExecutionSnapshot(stages *[]operationrun.StageExecutionSnapshot, update operationrun.StageExecutionSnapshot) error {
+	for index := range *stages {
+		current := &(*stages)[index]
+		if current.StageIndex != update.StageIndex {
+			continue
+		}
+		if current.StageID != update.StageID || current.ExecutorNodeID != update.ExecutorNodeID {
+			return errors.New("durable operation stage identity cannot be rewritten")
+		}
+		if err := mergeOperationExecutionFact(&current.RestorePoint, update.RestorePoint, "stage restore point"); err != nil {
+			return err
+		}
+		if err := mergeOperationExecutionFact(&current.Apply, update.Apply, "stage Apply result"); err != nil {
+			return err
+		}
+		if err := mergeOperationExecutionFact(&current.Verification, update.Verification, "stage verification"); err != nil {
+			return err
+		}
+		if err := mergeOperationExecutionFact(&current.Rollback, update.Rollback, "stage rollback result"); err != nil {
+			return err
+		}
+		if err := mergeOperationExecutionFact(&current.RollbackVerification, update.RollbackVerification, "stage rollback verification"); err != nil {
+			return err
+		}
+		if err := mergeStageTime(&current.RestorePointAt, update.RestorePointAt); err != nil {
+			return err
+		}
+		if err := mergeStageTime(&current.ApplyAt, update.ApplyAt); err != nil {
+			return err
+		}
+		if err := mergeStageTime(&current.VerificationAt, update.VerificationAt); err != nil {
+			return err
+		}
+		if err := mergeStageTime(&current.RollbackAt, update.RollbackAt); err != nil {
+			return err
+		}
+		if err := mergeStageTime(&current.RollbackVerificationAt, update.RollbackVerificationAt); err != nil {
+			return err
+		}
+		return nil
+	}
+	*stages = append(*stages, update)
+	sort.Slice(*stages, func(i, j int) bool { return (*stages)[i].StageIndex < (*stages)[j].StageIndex })
+	return nil
+}
+
+func mergeStageTime(current *time.Time, update time.Time) error {
+	if update.IsZero() {
+		return nil
+	}
+	if !current.IsZero() && !current.Equal(update) {
+		return errors.New("durable operation stage terminal time cannot be rewritten")
+	}
+	*current = update
+	return nil
 }
 
 func mergeOperationExecutionFact[T any](current **T, update *T, name string) error {
@@ -306,6 +420,24 @@ func validateOperationExecutionSnapshot(snapshot *operationrun.ExecutionSnapshot
 	if snapshot.RollbackVerification != nil && snapshot.Rollback == nil {
 		return errors.New("durable rollback verification requires a rollback result")
 	}
+	for index := range snapshot.Stages {
+		stage := &snapshot.Stages[index]
+		if stage.StageIndex != index || stage.StageID == "" || stage.ExecutorNodeID == "" {
+			return errors.New("durable operation stages must be ordered and explicitly correlated")
+		}
+		if stage.Apply != nil && stage.RestorePoint == nil {
+			return errors.New("durable stage Apply result requires its restore point")
+		}
+		if stage.Verification != nil && stage.Apply == nil {
+			return errors.New("durable stage verification requires its Apply result")
+		}
+		if stage.Rollback != nil && (stage.RestorePoint == nil || stage.Apply == nil) {
+			return errors.New("durable stage rollback requires its restore point and Apply result")
+		}
+		if stage.RollbackVerification != nil && stage.Rollback == nil {
+			return errors.New("durable stage rollback verification requires its rollback result")
+		}
+	}
 	return nil
 }
 
@@ -316,6 +448,16 @@ func applyOperationPlanningResultTx(
 	result operation.PlanningResult,
 	at time.Time,
 ) error {
+	if result.Plan != nil {
+		run, err := scanOperationRun(transaction.QueryRowContext(ctx, `SELECT `+operationRunColumns+` FROM operation_runs WHERE task_id = ?`, taskID))
+		if err != nil {
+			return fmt.Errorf("load operation run before freezing plan stages: %w", err)
+		}
+		run.Plan = result.Plan
+		if _, err := operationrun.ExecutionStages(run); err != nil {
+			return fmt.Errorf("validate frozen operation stages: %w", err)
+		}
+	}
 	discovery, err := nullableJSON(result.Discovery)
 	if err != nil {
 		return err
@@ -372,7 +514,7 @@ func scanOperationRun(source scanner) (operationrun.Resource, error) {
 		return operationrun.Resource{}, err
 	}
 	run.Spec.Parameters = json.RawMessage(parameters)
-	if err := json.Unmarshal([]byte(targets), &run.Spec.Targets); err != nil {
+	if err := decodeOperationRunTargets(targets, &run.Spec); err != nil {
 		return operationrun.Resource{}, fmt.Errorf("decode operation run targets: %w", err)
 	}
 	if err := json.Unmarshal([]byte(secretRefs), &run.Spec.SecretRefs); err != nil {
@@ -411,7 +553,11 @@ func scanOperationRun(source scanner) (operationrun.Resource, error) {
 }
 
 func encodeOperationRunSpec(spec operationrun.Spec) (string, string, string, error) {
-	targets, err := json.Marshal(spec.Targets)
+	participants := spec.ParticipantNodeIDs
+	if len(participants) == 0 {
+		participants = []string{spec.NodeID}
+	}
+	targets, err := json.Marshal(operationRunTargetEnvelope{SchemaVersion: 2, Targets: spec.Targets, ParticipantNodeIDs: participants})
 	if err != nil {
 		return "", "", "", fmt.Errorf("encode operation run targets: %w", err)
 	}
@@ -420,6 +566,28 @@ func encodeOperationRunSpec(spec operationrun.Spec) (string, string, string, err
 		return "", "", "", fmt.Errorf("encode operation run secret refs: %w", err)
 	}
 	return string(targets), string(spec.Parameters), string(secretRefs), nil
+}
+
+type operationRunTargetEnvelope struct {
+	SchemaVersion      int                `json:"schema_version"`
+	Targets            []operation.Target `json:"targets"`
+	ParticipantNodeIDs []string           `json:"participant_node_ids"`
+}
+
+func decodeOperationRunTargets(raw string, spec *operationrun.Spec) error {
+	var envelope operationRunTargetEnvelope
+	if err := json.Unmarshal([]byte(raw), &envelope); err == nil && envelope.SchemaVersion == 2 {
+		spec.Targets = envelope.Targets
+		spec.ParticipantNodeIDs = envelope.ParticipantNodeIDs
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &spec.Targets); err != nil {
+		return err
+	}
+	// Existing rows are single-node runs by contract. Preserve them without a
+	// schema migration while exposing the new explicit participant projection.
+	spec.ParticipantNodeIDs = []string{spec.NodeID}
+	return nil
 }
 
 func sameOperationRunSpec(left, right operationrun.Resource) bool {

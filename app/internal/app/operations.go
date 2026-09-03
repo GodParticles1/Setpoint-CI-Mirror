@@ -18,10 +18,12 @@ import (
 )
 
 var (
-	ErrOperationPlanDigestConflict     = errors.New("operation plan digest does not match the persisted plan")
-	ErrOperationRunIdempotencyConflict = errors.New("operation run idempotency key conflicts with a different frozen specification")
-	ErrOperationStateConflict          = errors.New("operation run state does not permit the requested transition")
-	ErrProductApplyDisabled            = errors.New("product Apply is disabled")
+	ErrOperationPlanDigestConflict       = errors.New("operation plan digest does not match the persisted plan")
+	ErrOperationRunIdempotencyConflict   = errors.New("operation run idempotency key conflicts with a different frozen specification")
+	ErrOperationStateConflict            = errors.New("operation run state does not permit the requested transition")
+	ErrOperationBatchFingerprintConflict = errors.New("operation batch confirmation fingerprint conflicts with the accepted intent")
+	ErrOperationBatchStaleMembership     = errors.New("operation batch confirmation membership is stale or invalid")
+	ErrProductApplyDisabled              = errors.New("product Apply is disabled")
 )
 
 type OperationRunRepository interface {
@@ -142,6 +144,18 @@ func (service *OperationsService) ListOperationRuns(ctx context.Context, options
 	return runs, options, err
 }
 
+func (service *OperationsService) ConfirmOperationBatch(context.Context, protocol.ConfirmOperationBatchRequest) (protocol.OperationBatchConfirmationResponse, error) {
+	return protocol.OperationBatchConfirmationResponse{}, errors.New("durable operation batch confirmation support is unavailable")
+}
+
+func (service *OperationsService) GetOperationBatchConfirmation(context.Context, string) (protocol.OperationBatchConfirmationResponse, error) {
+	return protocol.OperationBatchConfirmationResponse{}, errors.New("durable operation batch confirmation support is unavailable")
+}
+
+func (service *OperationsService) ListOperationBatchConfirmations(context.Context, string, protocol.ListOptions) ([]protocol.OperationBatchConfirmationResponse, protocol.ListOptions, error) {
+	return nil, protocol.ListOptions{}, errors.New("durable operation batch confirmation support is unavailable")
+}
+
 func (service *OperationsService) ConfirmOperationRun(ctx context.Context, id string, request protocol.ConfirmOperationRunRequest) (operationrun.Resource, error) {
 	if err := validateIdentifier(strings.TrimSpace(request.IdempotencyKey)); err != nil {
 		return operationrun.Resource{}, &ValidationError{Err: fmt.Errorf("idempotency_key: %w", err)}
@@ -199,6 +213,10 @@ func (service *OperationsService) validateCreateOperationRun(ctx context.Context
 	if err != nil {
 		return operationrun.Spec{}, "", operation.Metadata{}, err
 	}
+	participants, err := service.normalizeOperationParticipants(ctx, request.Spec.ParticipantNodeIDs, nodeID, targets)
+	if err != nil {
+		return operationrun.Spec{}, "", operation.Metadata{}, err
+	}
 	parameters, canonical, err := canonicalParameters(request.Spec.Parameters)
 	if err != nil {
 		return operationrun.Spec{}, "", operation.Metadata{}, err
@@ -221,7 +239,53 @@ func (service *OperationsService) validateCreateOperationRun(ctx context.Context
 		return operationrun.Spec{}, "", operation.Metadata{}, err
 	}
 	return operationrun.Spec{OperationID: operationID, OperationVersion: metadata.Version, CapabilityDigest: digest,
-		NodeID: nodeID, Targets: targets, Parameters: normalized, SecretRefs: secretRefs}, key, metadata, nil
+		NodeID: nodeID, ParticipantNodeIDs: participants, Targets: targets, Parameters: normalized, SecretRefs: secretRefs}, key, metadata, nil
+}
+
+func (service *OperationsService) normalizeOperationParticipants(ctx context.Context, supplied []string, nodeID string, targets []operation.Target) ([]string, error) {
+	if len(supplied) == 0 {
+		supplied = []string{nodeID}
+	}
+	participants := make([]string, len(supplied))
+	seen := make(map[string]struct{}, len(supplied))
+	for index, value := range supplied {
+		participant := strings.TrimSpace(value)
+		if err := validateIdentifier(participant); err != nil {
+			return nil, fmt.Errorf("spec.participant_node_ids[%d]: %w", index, err)
+		}
+		if _, exists := seen[participant]; exists {
+			return nil, errors.New("spec.participant_node_ids contains a duplicate node")
+		}
+		if _, err := service.nodes.GetNode(ctx, participant, service.offlineAfter); err != nil {
+			return nil, fmt.Errorf("spec.participant_node_ids[%d]: %w", index, err)
+		}
+		seen[participant] = struct{}{}
+		participants[index] = participant
+	}
+	if _, ok := seen[nodeID]; !ok {
+		return nil, errors.New("spec.participant_node_ids must include spec.node_id")
+	}
+	for _, target := range targets {
+		if target.Kind == operation.TargetNode {
+			if _, ok := seen[target.NodeID]; !ok {
+				return nil, errors.New("every node target must belong to the frozen participant set")
+			}
+		}
+	}
+	for participant := range seen {
+		found := false
+		for _, target := range targets {
+			if target.Kind == operation.TargetNode && target.NodeID == participant {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("frozen participant %q requires an explicit node target", participant)
+		}
+	}
+	sort.Strings(participants)
+	return participants, nil
 }
 
 func normalizeOperationTargets(targets []operation.Target, nodeID string) ([]operation.Target, error) {

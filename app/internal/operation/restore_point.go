@@ -34,6 +34,7 @@ type RestorePointRequest struct {
 	RunID       string
 	Targets     []Target
 	Plan        Plan
+	Stage       *PlanStep
 	Retention   time.Duration
 }
 

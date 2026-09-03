@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-var ErrLeaseAuthorityUnavailable = errors.New("server operation lease authority is unavailable")
+var (
+	ErrLeaseAuthorityUnavailable = errors.New("server operation lease authority is unavailable")
+	ErrLeaseAuthoritativeAbsence = errors.New("server operation lease is authoritatively absent")
+)
 
 type CurrentLeaseReader interface {
 	CurrentLeaseByOwner(context.Context, string) (LockLease, bool, error)
@@ -107,23 +110,33 @@ func (supervisor *LeaseSupervisor) Resume(ctx context.Context, runID string, tar
 			return LockLease{}, fmt.Errorf("%w: %v", ErrLeaseAuthorityUnavailable, existing.failure)
 		}
 		if !reflect.DeepEqual(existing.resources, resources) {
-			return LockLease{}, errors.New("operation run already has a different supervised lease resource set")
+			return LockLease{}, fmt.Errorf("%w: operation run already has a different supervised lease resource set", ErrLeaseAuthorityUnavailable)
+		}
+		if err := validateExactLeaseBinding(existing.lease, runID, resources, supervisor.now()); err != nil {
+			return LockLease{}, fmt.Errorf("%w: validate supervised operation lease: %v", ErrLeaseAuthorityUnavailable, err)
 		}
 		return existing.lease, nil
 	}
 
 	lease, found, err := supervisor.authority.CurrentLeaseByOwner(ctx, runID)
 	if err != nil {
-		return LockLease{}, fmt.Errorf("inspect current authoritative operation lease: %w", err)
+		return LockLease{}, fmt.Errorf("%w: inspect current authoritative operation lease: %v", ErrLeaseAuthorityUnavailable, err)
 	}
 	if !found {
-		return LockLease{}, ErrLeaseAuthorityUnavailable
+		return LockLease{}, ErrLeaseAuthoritativeAbsence
 	}
 	if err := validateExactLeaseBinding(lease, runID, resources, supervisor.now()); err != nil {
-		return LockLease{}, fmt.Errorf("reconcile current authoritative operation lease: %w", err)
+		return LockLease{}, fmt.Errorf("%w: reconcile current authoritative operation lease: %v", ErrLeaseAuthorityUnavailable, err)
 	}
-	supervisor.startLocked(runID, lease, resources)
-	return lease, nil
+	renewed, err := supervisor.locks.Renew(ctx, lease, supervisor.ttl)
+	if err != nil {
+		return LockLease{}, fmt.Errorf("%w: synchronously renew resumed operation lease: %v", ErrLeaseAuthorityUnavailable, err)
+	}
+	if err := validateExactLeaseBinding(renewed, runID, resources, supervisor.now()); err != nil {
+		return LockLease{}, fmt.Errorf("%w: validate synchronously renewed operation lease: %v", ErrLeaseAuthorityUnavailable, err)
+	}
+	supervisor.startLocked(runID, renewed, resources)
+	return renewed, nil
 }
 
 func (supervisor *LeaseSupervisor) CurrentLeaseByOwner(ctx context.Context, runID string) (LockLease, bool, error) {

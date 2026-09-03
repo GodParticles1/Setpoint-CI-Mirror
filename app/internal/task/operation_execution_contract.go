@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"setpoint/internal/operation"
@@ -36,34 +37,47 @@ func ValidOperationAction(action OperationAction) bool {
 }
 
 type OperationExecutionContract struct {
-	SchemaVersion int                       `json:"schema_version"`
-	OperationID   string                    `json:"operation_id"`
-	RunID         string                    `json:"run_id"`
-	Action        OperationAction           `json:"action"`
-	PlanDigest    string                    `json:"plan_digest"`
-	Targets       []operation.Target        `json:"targets"`
-	Plan          operation.Plan            `json:"plan"`
-	Impact        *operation.Impact         `json:"impact,omitempty"`
-	RestorePoint  *operation.RestorePoint   `json:"restore_point,omitempty"`
-	Apply         *operation.ApplyResult    `json:"apply,omitempty"`
-	Rollback      *operation.RollbackResult `json:"rollback,omitempty"`
+	SchemaVersion      int                       `json:"schema_version"`
+	OperationID        string                    `json:"operation_id"`
+	RunID              string                    `json:"run_id"`
+	Action             OperationAction           `json:"action"`
+	PlanDigest         string                    `json:"plan_digest"`
+	ParticipantNodeIDs []string                  `json:"participant_node_ids,omitempty"`
+	StageIndex         int                       `json:"stage_index,omitempty"`
+	Stage              operation.PlanStep        `json:"stage,omitempty"`
+	Targets            []operation.Target        `json:"targets"`
+	Plan               operation.Plan            `json:"plan"`
+	Impact             *operation.Impact         `json:"impact,omitempty"`
+	RestorePoint       *operation.RestorePoint   `json:"restore_point,omitempty"`
+	Apply              *operation.ApplyResult    `json:"apply,omitempty"`
+	Rollback           *operation.RollbackResult `json:"rollback,omitempty"`
 }
 
 type OperationExecutionResult struct {
-	OperationID  string                    `json:"operation_id"`
-	RunID        string                    `json:"run_id"`
-	Action       OperationAction           `json:"action"`
-	RestorePoint *operation.RestorePoint   `json:"restore_point,omitempty"`
-	Apply        *operation.ApplyResult    `json:"apply,omitempty"`
-	Verification *operation.Verification   `json:"verification,omitempty"`
-	Rollback     *operation.RollbackResult `json:"rollback,omitempty"`
-	Error        *Failure                  `json:"error,omitempty"`
+	OperationID        string                    `json:"operation_id"`
+	RunID              string                    `json:"run_id"`
+	Action             OperationAction           `json:"action"`
+	ParticipantNodeIDs []string                  `json:"participant_node_ids,omitempty"`
+	StageID            string                    `json:"stage_id,omitempty"`
+	StageIndex         int                       `json:"stage_index,omitempty"`
+	ExecutorNodeID     string                    `json:"executor_node_id,omitempty"`
+	RestorePoint       *operation.RestorePoint   `json:"restore_point,omitempty"`
+	Apply              *operation.ApplyResult    `json:"apply,omitempty"`
+	Verification       *operation.Verification   `json:"verification,omitempty"`
+	Rollback           *operation.RollbackResult `json:"rollback,omitempty"`
+	Error              *Failure                  `json:"error,omitempty"`
 }
 
 func NewOperationExecutionContract(contract OperationExecutionContract) (OperationExecutionContract, string, error) {
 	contract.OperationID = strings.TrimSpace(contract.OperationID)
 	contract.RunID = strings.TrimSpace(contract.RunID)
 	contract.PlanDigest = strings.TrimSpace(contract.PlanDigest)
+	for index := range contract.ParticipantNodeIDs {
+		contract.ParticipantNodeIDs[index] = strings.TrimSpace(contract.ParticipantNodeIDs[index])
+	}
+	sort.Strings(contract.ParticipantNodeIDs)
+	contract.Stage.ID = strings.TrimSpace(contract.Stage.ID)
+	contract.Stage.ExecutorNodeID = strings.TrimSpace(contract.Stage.ExecutorNodeID)
 	contract.Targets = append([]operation.Target(nil), contract.Targets...)
 	if contract.SchemaVersion == 0 {
 		contract.SchemaVersion = OperationExecutionContractVersion
@@ -122,6 +136,40 @@ func validateOperationExecutionContract(contract OperationExecutionContract) err
 	}
 	if len(contract.Targets) == 0 {
 		return errors.New("operation execution contract requires at least one target")
+	}
+	if len(contract.ParticipantNodeIDs) > 0 {
+		seen := make(map[string]struct{}, len(contract.ParticipantNodeIDs))
+		for index, participant := range contract.ParticipantNodeIDs {
+			if !validContractIdentifier(participant) {
+				return fmt.Errorf("operation execution participant %d is invalid", index)
+			}
+			if index > 0 && contract.ParticipantNodeIDs[index-1] >= participant {
+				return errors.New("operation execution participants must be canonical and unique")
+			}
+			seen[participant] = struct{}{}
+		}
+		if contract.Stage.ID == "" || contract.Stage.ExecutorNodeID == "" {
+			return errors.New("staged operation execution requires explicit stage and executor identity")
+		}
+		if len(contract.ParticipantNodeIDs) == 1 {
+			if contract.StageIndex != 0 {
+				return errors.New("single-node operation execution has exactly one stage")
+			}
+		} else {
+			if contract.StageIndex < 0 || contract.StageIndex >= len(contract.Plan.Steps) {
+				return errors.New("operation execution stage index is outside the frozen plan")
+			}
+			planned := contract.Plan.Steps[contract.StageIndex]
+			if planned.ID != contract.Stage.ID || planned.ExecutorNodeID != contract.Stage.ExecutorNodeID {
+				return errors.New("operation execution stage does not match the frozen plan")
+			}
+		}
+		if _, ok := seen[contract.Stage.ExecutorNodeID]; !ok {
+			return errors.New("operation execution stage executor is outside the frozen participants")
+		}
+		if err := operation.ValidateExecutionStage(contract.Stage, contract.ParticipantNodeIDs); err != nil {
+			return err
+		}
 	}
 	for _, target := range contract.Targets {
 		if err := operation.ValidateTarget(target); err != nil {

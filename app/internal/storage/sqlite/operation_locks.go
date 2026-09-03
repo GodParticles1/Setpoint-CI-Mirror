@@ -44,7 +44,7 @@ func (store *Store) Acquire(ctx context.Context, request operation.LockRequest) 
 		var leaseID string
 		err := transaction.QueryRowContext(ctx, `SELECT lease_id FROM operation_lock_resources WHERE resource_key = ?`, resource.Key).Scan(&leaseID)
 		if err == nil {
-			return operation.LockLease{}, fmt.Errorf("operation lock resource %q is already leased by %s", resource.Key, leaseID)
+			return operation.LockLease{}, fmt.Errorf("%w: resource %q is held by %s", operation.ErrLockResourceBusy, resource.Key, leaseID)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return operation.LockLease{}, fmt.Errorf("check operation lock resource %q: %w", resource.Key, err)

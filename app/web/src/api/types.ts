@@ -256,7 +256,7 @@ export interface OperationParameterField {
 
 export interface OperationParameter {
   name: string
-  type: 'string' | 'string[]' | 'object'
+  type: 'string' | 'integer' | 'boolean' | 'string[]' | 'object'
   description: string
   required: boolean
   options?: string[]
@@ -357,6 +357,33 @@ export interface OperationRollbackResult {
   checkpoint: string
   state: OperationArtifact
   evidence?: OperationEvidenceRef[]
+}
+
+export type OperationBatchMemberState = 'pending' | 'confirmed' | 'suppressed_canceled'
+
+export interface OperationBatchConfirmationMember {
+  ordinal: number
+  identity: { task_id: string; check_id: string; node_id: string }
+  run_id: string
+  plan_digest: string
+  state: OperationBatchMemberState
+  updated_at: string
+}
+
+export interface OperationBatchConfirmationReceipt {
+  api_version: 'setpoint.io/v1'
+  kind: 'OperationBatchConfirmation'
+  batch_id: string
+  source_check_run_id: string
+  confirmation_fingerprint: string
+  confirmation_idempotency_key: string
+  accepted_at: string
+  members: OperationBatchConfirmationMember[]
+}
+
+export interface OperationBatchConfirmationResponse {
+  receipt: OperationBatchConfirmationReceipt
+  runs: OperationRun[]
 }
 
 export interface OperationRun {

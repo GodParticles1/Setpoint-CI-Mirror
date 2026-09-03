@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var ErrLockResourceBusy = errors.New("operation lock resource is already leased")
+
 type LockResource struct {
 	Key string `json:"key"`
 }

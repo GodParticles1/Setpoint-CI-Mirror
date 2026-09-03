@@ -71,6 +71,15 @@ func (store *Store) ContinueOperationRun(
 		return operationrun.Resource{}, errors.New("operation continuation task does not match the durable run")
 	}
 	expectedTargets := operationRunExecutionTargets(current)
+	if len(nextTask.Spec.OperationExecution.ParticipantNodeIDs) > 0 {
+		if !reflect.DeepEqual(nextTask.Spec.OperationExecution.ParticipantNodeIDs, current.Spec.ParticipantNodeIDs) {
+			return operationrun.Resource{}, errors.New("operation continuation participants do not match the durable run")
+		}
+		if nextTask.Spec.NodeID != nextTask.Spec.OperationExecution.Stage.ExecutorNodeID {
+			return operationrun.Resource{}, errors.New("operation continuation task is not addressed to its frozen stage executor")
+		}
+		expectedTargets = operationrun.StageTargets(current, nextTask.Spec.OperationExecution.Stage)
+	}
 	if !reflect.DeepEqual(nextTask.Spec.Targets, expectedTargets) || !reflect.DeepEqual(nextTask.Spec.OperationExecution.Targets, expectedTargets) {
 		return operationrun.Resource{}, errors.New("operation continuation task targets do not match the durable plan")
 	}

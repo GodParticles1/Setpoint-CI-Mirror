@@ -12,7 +12,7 @@ import (
 )
 
 func TestEveryHistoricalSchemaMigratesToLatestAndReopens(t *testing.T) {
-	for version := 1; version < 16; version++ {
+	for version := 1; version < 17; version++ {
 		version := version
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			ctx := context.Background()
@@ -132,6 +132,10 @@ func seedHistoricalSchema(t *testing.T, ctx context.Context, path string, target
 	if target >= 15 {
 		applyMigration(15, migrateSchemaV15)
 		recordVersion(15)
+	}
+	if target >= 16 {
+		applyStatements(16, schemaV16Statements)
+		recordVersion(16)
 	}
 	if err := transaction.Commit(); err != nil {
 		t.Fatal(err)

@@ -14,13 +14,14 @@ type Metadata struct {
 }
 
 type Spec struct {
-	OperationID      string                `json:"operation_id"`
-	OperationVersion string                `json:"operation_version"`
-	CapabilityDigest string                `json:"capability_digest"`
-	NodeID           string                `json:"node_id"`
-	Targets          []operation.Target    `json:"targets"`
-	Parameters       json.RawMessage       `json:"parameters"`
-	SecretRefs       []operation.SecretRef `json:"secret_refs,omitempty"`
+	OperationID        string                `json:"operation_id"`
+	OperationVersion   string                `json:"operation_version"`
+	CapabilityDigest   string                `json:"capability_digest"`
+	NodeID             string                `json:"node_id"`
+	ParticipantNodeIDs []string              `json:"participant_node_ids"`
+	Targets            []operation.Target    `json:"targets"`
+	Parameters         json.RawMessage       `json:"parameters"`
+	SecretRefs         []operation.SecretRef `json:"secret_refs,omitempty"`
 }
 
 type Recovery struct {
@@ -29,6 +30,11 @@ type Recovery struct {
 	SafeNext     string `json:"safe_next_action"`
 	ManualReview bool   `json:"manual_review"`
 }
+
+const (
+	RecoveryCancellationRequested = "cancellation_requested"
+	RecoveryCancellationReconcile = "cancellation_requires_reconcile"
+)
 
 type Availability struct {
 	Planning       bool   `json:"planning"`
@@ -60,11 +66,28 @@ type Status struct {
 // integration can persist the same Operation lifecycle without inventing a
 // second business state model.
 type ExecutionSnapshot struct {
-	RestorePoint         *operation.RestorePoint  `json:"restore_point,omitempty"`
-	Apply                *operation.ApplyResult   `json:"apply,omitempty"`
-	Verification         *operation.Verification  `json:"verification,omitempty"`
+	RestorePoint         *operation.RestorePoint   `json:"restore_point,omitempty"`
+	Apply                *operation.ApplyResult    `json:"apply,omitempty"`
+	Verification         *operation.Verification   `json:"verification,omitempty"`
 	Rollback             *operation.RollbackResult `json:"rollback,omitempty"`
-	RollbackVerification *operation.Verification  `json:"rollback_verification,omitempty"`
+	RollbackVerification *operation.Verification   `json:"rollback_verification,omitempty"`
+	Stages               []StageExecutionSnapshot  `json:"stages,omitempty"`
+}
+
+type StageExecutionSnapshot struct {
+	StageIndex             int                       `json:"stage_index"`
+	StageID                string                    `json:"stage_id"`
+	ExecutorNodeID         string                    `json:"executor_node_id"`
+	RestorePointAt         time.Time                 `json:"restore_point_at,omitempty"`
+	ApplyAt                time.Time                 `json:"apply_at,omitempty"`
+	VerificationAt         time.Time                 `json:"verification_at,omitempty"`
+	RollbackAt             time.Time                 `json:"rollback_at,omitempty"`
+	RollbackVerificationAt time.Time                 `json:"rollback_verification_at,omitempty"`
+	RestorePoint           *operation.RestorePoint   `json:"restore_point,omitempty"`
+	Apply                  *operation.ApplyResult    `json:"apply,omitempty"`
+	Verification           *operation.Verification   `json:"verification,omitempty"`
+	Rollback               *operation.RollbackResult `json:"rollback,omitempty"`
+	RollbackVerification   *operation.Verification   `json:"rollback_verification,omitempty"`
 }
 
 type Resource struct {

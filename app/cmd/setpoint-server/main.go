@@ -16,6 +16,7 @@ import (
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/operation/sysctlrepair"
+	"setpoint/internal/operation/xrocketreaddress"
 	"setpoint/internal/plugin"
 	"setpoint/internal/plugins"
 	"setpoint/internal/server"
@@ -76,30 +77,27 @@ func run(logger *slog.Logger) error {
 	if err := service.SyncChecks(context.Background()); err != nil {
 		return err
 	}
-	operationRegistry := operation.NewRegistry()
-	if err := operationRegistry.Register(clickhouse.NewCatalogDescriptor()); err != nil {
-		return err
-	}
-	if err := operationRegistry.Register(sysctlrepair.NewCatalogDescriptor()); err != nil {
+	operationRegistry, err := newServerOperationRegistry()
+	if err != nil {
 		return err
 	}
 	baseOperations, err := app.NewOperationsService(store, store, operationRegistry, config.OfflineAfter)
 	if err != nil {
 		return err
 	}
-	executionResolver, err := app.NewProductExecutionResolver(
-		app.ProductExecutionCapability{OperationID: sysctlrepair.ID, ApplyAvailable: true},
-		app.ProductExecutionCapability{OperationID: clickhouse.OperationID, ApplyAvailable: true},
-	)
+	executionResolver, err := newProductExecutionResolver()
 	if err != nil {
 		return err
 	}
-	productOperations, err := app.NewProductOperations(baseOperations, store, leaseSupervisor, executionResolver)
+	productOperations, err := app.NewProductOperationsWithBatchRemediation(baseOperations, store, leaseSupervisor, executionResolver, registry)
 	if err != nil {
 		return err
 	}
 	if err := productOperations.ResumeOperationRuns(context.Background()); err != nil {
 		return fmt.Errorf("resume durable operation runs: %w", err)
+	}
+	if err := productOperations.ResumeBatchConfirmations(context.Background()); err != nil {
+		return fmt.Errorf("resume durable batch confirmations: %w", err)
 	}
 	productService, err := app.NewProductService(service, productOperations)
 	if err != nil {
@@ -142,4 +140,26 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return httpServer.Run(ctx)
+}
+
+func newServerOperationRegistry() (*operation.Registry, error) {
+	registry := operation.NewRegistry()
+	for _, candidate := range []operation.Descriptor{
+		clickhouse.NewCatalogDescriptor(),
+		sysctlrepair.NewCatalogDescriptor(),
+		xrocketreaddress.NewCatalogDescriptor(),
+	} {
+		if err := registry.Register(candidate); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
+}
+
+func newProductExecutionResolver() (*app.ProductExecutionResolver, error) {
+	return app.NewProductExecutionResolver(
+		app.ProductExecutionCapability{OperationID: sysctlrepair.ID, ApplyAvailable: true},
+		app.ProductExecutionCapability{OperationID: clickhouse.OperationID, ApplyAvailable: true},
+		app.ProductExecutionCapability{OperationID: xrocketreaddress.OperationID, ApplyAvailable: false},
+	)
 }

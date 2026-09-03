@@ -69,14 +69,37 @@ type Precheck struct {
 }
 
 type PlanStep struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Target         Target `json:"target"`
-	Action         string `json:"action"`
-	Checkpoint     string `json:"checkpoint"`
-	Writes         bool   `json:"writes"`
-	RetrySafe      bool   `json:"retry_safe"`
-	RollbackAction string `json:"rollback_action,omitempty"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	Target         Target              `json:"target"`
+	Action         string              `json:"action"`
+	Checkpoint     string              `json:"checkpoint"`
+	Writes         bool                `json:"writes"`
+	RetrySafe      bool                `json:"retry_safe"`
+	RollbackAction string              `json:"rollback_action,omitempty"`
+	ExecutorNodeID string              `json:"executor_node_id,omitempty"`
+	Barrier        StageBarrier        `json:"barrier,omitempty"`
+	Mutation       StageMutation       `json:"mutation,omitempty"`
+	Preconditions  []StagePrecondition `json:"preconditions,omitempty"`
+}
+
+type StageBarrier string
+
+const StageBarrierAgentReconnect StageBarrier = "agent_reconnect"
+
+type StageMutation string
+
+const StageMutationVIPOwner StageMutation = "vip_owner"
+
+type StagePreconditionKind string
+
+const StagePreconditionVIPOwner StagePreconditionKind = "vip_owner"
+
+type StagePrecondition struct {
+	Kind              StagePreconditionKind `json:"kind"`
+	ParticipantNodeID string                `json:"participant_node_id"`
+	Verified          bool                  `json:"verified"`
+	Evidence          []EvidenceRef         `json:"evidence"`
 }
 
 type Plan struct {
@@ -143,6 +166,7 @@ type ImpactInput struct {
 type ApplyInput struct {
 	Runtime      RuntimeInput
 	Plan         Plan
+	Stage        *PlanStep
 	Impact       Impact
 	RestorePoint RestorePoint
 	Lease        LeaseHandle
@@ -150,11 +174,13 @@ type ApplyInput struct {
 type VerifyInput struct {
 	Runtime RuntimeInput
 	Plan    Plan
+	Stage   *PlanStep
 	Apply   ApplyResult
 }
 type RollbackInput struct {
 	Runtime      RuntimeInput
 	Plan         Plan
+	Stage        *PlanStep
 	Apply        ApplyResult
 	RestorePoint RestorePoint
 	Lease        LeaseHandle
@@ -162,6 +188,7 @@ type RollbackInput struct {
 type VerifyRollbackInput struct {
 	Runtime      RuntimeInput
 	Plan         Plan
+	Stage        *PlanStep
 	Rollback     RollbackResult
 	RestorePoint RestorePoint
 }

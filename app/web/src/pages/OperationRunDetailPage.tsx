@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, APIError } from '../api/client'
 import type { OperationFinding, OperationRun, OperationState, OperationTarget } from '../api/types'
 import { ExecutionActivity } from '../components/ExecutionActivity'
+import { XrocketReaddressRunClosure } from '../components/XrocketReaddress'
 import { Button, ErrorState, IconButton, Loading, OperationStateBadge, PageHeader } from '../components/ui'
 import { useResource } from '../hooks/useResource'
 import { dateTime, operationTerminal, shortID } from '../lib/format'
@@ -37,7 +38,8 @@ export function OperationRunDetailPage({ id, navigate }: { id: string; navigate:
   if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.refresh} />
   const { run, definition } = resource.data!
   const presentation = operationPresentation(definition)
-  const canConfirm = run.status.state === 'awaiting_confirmation' && Boolean(run.plan_digest)
+  const planningResolved = operationPlanningResolved(run)
+  const canConfirm = run.status.state === 'awaiting_confirmation' && planningResolved
   const confirmed = postConfirmationStates.has(run.status.state)
   const canCancel = !operationTerminal(run.status.state) && !['running', 'verifying', 'rolling_back'].includes(run.status.state)
   const outcome = operationOutcome(run, definition.availability.apply)
@@ -92,6 +94,7 @@ export function OperationRunDetailPage({ id, navigate }: { id: string; navigate:
       <PlanningStep index="5" label="Confirmation" description="计划确认" ready={confirmed} current={run.status.state === 'awaiting_confirmation'} />
     </section>
     <section className="operation-summary"><div><span>操作状态</span><OperationStateBadge state={run.status.state} /></div><div><span>执行节点</span><strong>{run.spec.node_id}</strong></div><div><span>当前检查点</span><code>{run.status.checkpoint}</code></div><div><span>计划摘要</span><code>{shortID(run.plan_digest || '尚未生成')}</code></div></section>
+    <XrocketReaddressRunClosure run={run} />
     {run.status.block && <BoundaryPanel title="阻断原因" code={run.status.block.code} message={run.status.block.message} safeNext={run.status.block.safe_next_action} manualReview={run.status.block.manual_review} blocking />}
     {run.status.recovery && <BoundaryPanel title="恢复状态" code={run.status.recovery.code} message={run.status.recovery.checkpoint || '当前检查点未提供'} safeNext={run.status.recovery.safe_next_action} manualReview={run.status.recovery.manual_review} />}
     <section className="operation-detail-grid">
@@ -99,11 +102,15 @@ export function OperationRunDetailPage({ id, navigate }: { id: string; navigate:
       <DetailSection title="前置检查" ready={Boolean(run.precheck)}>{run.precheck && <><SummaryState positive={run.precheck.passed} positiveText="通过" negativeText="未通过" /><p>{run.precheck.summary}</p><Findings findings={run.precheck.findings} /></>}</DetailSection>
       <DetailSection title="操作计划" ready={Boolean(run.plan)} wide>{run.plan && <><p>{run.plan.summary}</p><div className="table-wrap"><table><thead><tr><th>步骤</th><th>目标</th><th>动作</th><th>检查点</th><th>写入</th></tr></thead><tbody>{run.plan.steps.map((step) => <tr key={step.id}><td><strong>{step.name}</strong><small>{step.id}</small></td><td>{formatTarget(step.target)}</td><td>{step.action}</td><td><code>{step.checkpoint}</code></td><td>{step.writes ? '是' : '否'}</td></tr>)}</tbody></table></div><Findings findings={run.plan.findings} /></>}</DetailSection>
       <DetailSection title="影响评估" ready={Boolean(run.impact)} wide>{run.impact && <><div className="impact-summary"><span className={`risk risk-${run.impact.risk}`}>{riskLabel(run.impact.risk)}</span><p>{run.impact.summary}</p></div><dl className="impact-facts"><div><dt>停机</dt><dd>{run.impact.requires_downtime ? '需要' : '不需要'}</dd></div><div><dt>写入围栏</dt><dd>{run.impact.requires_write_fence ? '需要' : '不需要'}</dd></div><div><dt>预计数据变化</dt><dd>{formatBytes(run.impact.estimated_data_change_bytes)}</dd></div></dl>{run.impact.changes.length > 0 && <div className="table-wrap"><table><thead><tr><th>目标</th><th>变更前</th><th>变更后</th><th>风险</th></tr></thead><tbody>{run.impact.changes.map((change, index) => <tr key={`${formatTarget(change.target)}:${index}`}><td>{formatTarget(change.target)}</td><td>{change.before}</td><td>{change.after}</td><td>{change.risk}</td></tr>)}</tbody></table></div>}</>}</DetailSection>
-      <section className="operation-detail operation-detail-wide"><header><h2>计划确认</h2><span>{canConfirm ? '待确认' : confirmed ? '已确认' : '等待中'}</span></header>{canConfirm ? <p>{definition.availability.apply ? '计划和影响摘要已冻结。确认会绑定当前 exact plan digest，并允许 Server 在继续通过安全门后进入恢复点创建、Apply、Verify，以及需要时的安全回滚与回滚验证。' : '计划和影响摘要已冻结，可确认当前 exact plan digest；该 Operation 当前不会继续进入 Apply。'}</p> : confirmed ? <p>{definition.availability.apply ? '当前 exact plan 已确认，Server 已进入后续受控生命周期；后续阶段仍以 Server 状态与安全门为准。' : '当前 exact plan 已确认；该 Operation 的实际执行仍未开放。'}</p> : <p className="muted">只有计划与影响摘要完整冻结后才可确认。</p>}</section>
+      <section className="operation-detail operation-detail-wide"><header><h2>计划确认</h2><span>{canConfirm ? '待确认' : confirmed ? '已确认' : '等待中'}</span></header>{canConfirm ? <p>{definition.availability.apply ? '计划和影响摘要已冻结。确认会绑定当前 exact plan digest，并允许 Server 在继续通过安全门后进入恢复点创建、Apply、Verify，以及需要时的安全回滚与回滚验证。' : '计划和影响摘要已冻结，可确认当前 exact plan digest；该 Operation 当前不会继续进入 Apply。'}</p> : confirmed ? <p>{definition.availability.apply ? '当前 exact plan 已确认，Server 已进入后续受控生命周期；后续阶段仍以 Server 状态与安全门为准。' : '当前 exact plan 已确认；该 Operation 的实际执行仍未开放。'}</p> : <p className="muted">Discovery、Precheck、Plan、Impact 与 exact plan digest 全部就绪后才可确认。</p>}</section>
       {run.execution && <ExecutionEvidence run={run} />}
     </section>
     {confirmOpen && <div className="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="confirm-plan-title"><button className="dialog-scrim" aria-label="关闭确认" onClick={() => setConfirmOpen(false)} /><section className="dialog"><header><h2 id="confirm-plan-title">确认当前计划</h2></header><div className="dialog-body"><p className="confirm-copy">{definition.availability.apply ? '确认只绑定当前已保存的目标、参数、计划、影响摘要与 exact plan digest。确认后 Server 可在继续满足安全门的前提下进入 Create Restore Point、Apply、Verify，并在需要时执行安全 Rollback 与 VerifyRollback；确认不承诺执行成功。' : '确认只绑定当前已保存的目标、参数、计划、影响摘要与 exact plan digest。该 Operation 当前不会继续进入实际 Apply。'}</p><dl className="confirm-digest"><div><dt>操作</dt><dd>{presentation.name}</dd></div><div><dt>节点</dt><dd>{run.spec.node_id}</dd></div>{run.impact && <div><dt>影响摘要</dt><dd>{run.impact.summary}</dd></div>}</dl><details className="technical-plan-digest"><summary>技术摘要 · exact plan digest</summary><code>{run.plan_digest}</code></details><div className="dialog-actions"><Button onClick={() => setConfirmOpen(false)}>返回</Button><span /><Button className="button-primary" disabled={confirming} onClick={confirm}>{confirming ? '正在确认' : '确认当前计划'}</Button></div></div></section></div>}
   </>
+}
+
+export function operationPlanningResolved(run: OperationRun) {
+  return Boolean(run.discovery?.applicable && run.precheck?.passed && run.plan && run.impact && run.plan_digest)
 }
 
 function ExecutionEvidence({ run }: { run: OperationRun }) {

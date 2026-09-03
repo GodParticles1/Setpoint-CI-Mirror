@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -127,6 +128,45 @@ func TestOperationsServiceRejectsTargetsParametersAndPlaintextSecrets(t *testing
 				t.Fatalf("error=%v", err)
 			}
 		})
+	}
+}
+
+func TestOperationRunFreezesExactlyTwoParticipants(t *testing.T) {
+	store, service := newOperationsServiceTest(t)
+	now := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+	if _, err := store.RegisterNode(context.Background(), domain.Registration{AgentID: "node-2", Hostname: "node-2", OS: "linux", OSVersion: "test", Arch: "amd64", AgentVersion: "test", ReceivedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	request := validOperationRunRequest()
+	request.Metadata.IdempotencyKey = "operation-two-participants"
+	request.Spec.ParticipantNodeIDs = []string{"node-2", "node-1"}
+	request.Spec.Targets = append(request.Spec.Targets, operation.Target{Kind: operation.TargetNode, NodeID: "node-2"})
+	run, created, err := service.CreateOperationRun(context.Background(), request)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if len(run.Spec.ParticipantNodeIDs) != 2 || run.Spec.ParticipantNodeIDs[0] != "node-1" || run.Spec.ParticipantNodeIDs[1] != "node-2" {
+		t.Fatalf("participants=%v", run.Spec.ParticipantNodeIDs)
+	}
+	restored, err := store.GetOperationRun(context.Background(), run.Metadata.ID)
+	if err != nil || !reflect.DeepEqual(restored.Spec.ParticipantNodeIDs, run.Spec.ParticipantNodeIDs) {
+		t.Fatalf("restored participants=%v err=%v", restored.Spec.ParticipantNodeIDs, err)
+	}
+}
+
+func TestSingleNodeOperationFreezesImplicitParticipantWithoutChangingTaskNode(t *testing.T) {
+	store, service := newOperationsServiceTest(t)
+	request := validOperationRunRequest()
+	run, _, err := service.CreateOperationRun(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(run.Spec.ParticipantNodeIDs, []string{"node-1"}) {
+		t.Fatalf("participants=%v", run.Spec.ParticipantNodeIDs)
+	}
+	planning, err := store.GetTask(context.Background(), run.Status.TaskID)
+	if err != nil || planning.Spec.NodeID != "node-1" {
+		t.Fatalf("planning=%#v err=%v", planning, err)
 	}
 }
 

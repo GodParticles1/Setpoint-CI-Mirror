@@ -140,6 +140,49 @@ func TestOperationExecutionRunnerIsBoundedAndDoesNotOwnCoordinatorLifecycle(t *t
 	}
 }
 
+func TestOperationExecutionRunnerCopiesFrozenParticipantsToStagedResult(t *testing.T) {
+	runner, metadata, _ := newActionTestRunner(t)
+	resource := actionTask(t, metadata, task.OperationActionCreateRestorePoint)
+	participants := []string{"node-1", "node-2"}
+	stage := operation.PlanStep{ID: "stage-0", ExecutorNodeID: "node-1", Target: operation.Target{Kind: operation.TargetNode, NodeID: "node-1"}}
+	other := operation.PlanStep{ID: "stage-1", ExecutorNodeID: "node-2", Target: operation.Target{Kind: operation.TargetNode, NodeID: "node-2"}}
+	contract := *resource.Spec.OperationExecution
+	contract.ParticipantNodeIDs = participants
+	contract.StageIndex = 0
+	contract.Stage = stage
+	contract.Plan.Steps = []operation.PlanStep{stage, other}
+	frozen, digest, err := task.NewOperationExecutionContract(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource.Spec.OperationExecution = &frozen
+	resource.Spec.ContractDigest = digest
+	result, err := runner.Execute(context.Background(), resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ParticipantNodeIDs) != 2 || result.ParticipantNodeIDs[0] != "node-1" || result.ParticipantNodeIDs[1] != "node-2" {
+		t.Fatalf("participants=%v", result.ParticipantNodeIDs)
+	}
+}
+
+func TestTaskWorkerCopiesFrozenParticipantsToCanceledStagedResult(t *testing.T) {
+	_, metadata, _ := newActionTestRunner(t)
+	resource := actionTask(t, metadata, task.OperationActionCreateRestorePoint)
+	participants := []string{"node-1", "node-2"}
+	stage := operation.PlanStep{ID: "stage-0", ExecutorNodeID: "node-1", Target: operation.Target{Kind: operation.TargetNode, NodeID: "node-1"}}
+	contract := *resource.Spec.OperationExecution
+	contract.ParticipantNodeIDs = participants
+	contract.StageIndex = 0
+	contract.Stage = stage
+	resource.Spec.OperationExecution = &contract
+	submission := (&TaskWorker{}).canceledSubmission(resource)
+	result := submission.OperationExecutionResult
+	if result == nil || len(result.ParticipantNodeIDs) != 2 || result.ParticipantNodeIDs[0] != "node-1" || result.StageID != "stage-0" || result.ExecutorNodeID != "node-1" {
+		t.Fatalf("submission=%#v", submission)
+	}
+}
+
 func TestOperationExecutionRunnerDestructiveActionsRequireBothServerAuthorityAdapters(t *testing.T) {
 	runner, metadata, _ := newActionTestRunner(t)
 	for _, action := range []task.OperationAction{task.OperationActionApply, task.OperationActionRollback} {

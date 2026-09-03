@@ -78,6 +78,9 @@ type OperationsService interface {
 	GetOperationRun(context.Context, string) (operationrun.Resource, error)
 	ConfirmOperationRun(context.Context, string, protocol.ConfirmOperationRunRequest) (operationrun.Resource, error)
 	CancelOperationRun(context.Context, string) (operationrun.Resource, error)
+	ConfirmOperationBatch(context.Context, protocol.ConfirmOperationBatchRequest) (protocol.OperationBatchConfirmationResponse, error)
+	GetOperationBatchConfirmation(context.Context, string) (protocol.OperationBatchConfirmationResponse, error)
+	ListOperationBatchConfirmations(context.Context, string, protocol.ListOptions) ([]protocol.OperationBatchConfirmationResponse, protocol.ListOptions, error)
 }
 
 type Handler struct {
@@ -138,6 +141,9 @@ func newManagementHandler(health HealthStore, service Service, operations Operat
 		mux.HandleFunc("GET /api/v1/operation-runs/{run_id}", handler.getOperationRun)
 		mux.HandleFunc("POST /api/v1/operation-runs/{run_id}/confirm", handler.confirmOperationRun)
 		mux.HandleFunc("POST /api/v1/operation-runs/{run_id}/cancel", handler.cancelOperationRun)
+		mux.HandleFunc("POST /api/v1/operation-batch-confirmations/confirm", handler.confirmOperationBatch)
+		mux.HandleFunc("GET /api/v1/operation-batch-confirmations", handler.listOperationBatchConfirmations)
+		mux.HandleFunc("GET /api/v1/operation-batch-confirmations/{batch_id}", handler.getOperationBatchConfirmation)
 	}
 	return handler.accessLog(ProtectManagement(mux)), nil
 }
@@ -402,6 +408,10 @@ func serviceConflictCode(err error) string {
 		return "operation_run_idempotency_conflict"
 	case errors.Is(err, app.ErrOperationPlanDigestConflict):
 		return "operation_plan_digest_conflict"
+	case errors.Is(err, app.ErrOperationBatchFingerprintConflict):
+		return "operation_batch_fingerprint_conflict"
+	case errors.Is(err, app.ErrOperationBatchStaleMembership):
+		return "operation_batch_stale_membership"
 	case errors.Is(err, app.ErrProductApplyDisabled):
 		return "product_apply_disabled"
 	case errors.Is(err, app.ErrOperationExecutionUnavailable):

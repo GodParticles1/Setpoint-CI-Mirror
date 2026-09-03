@@ -6,31 +6,44 @@ import (
 	"time"
 
 	"setpoint/internal/checkrun"
+	"setpoint/internal/plugin"
 	"setpoint/internal/task"
 )
 
 func TestDecorateCheckRunExposesRemediationOfferContract(t *testing.T) {
 	now := time.Now().UTC()
 	unsafe := false
+	checkID := "net.ipv4.conf.all.accept_redirects.persisted"
 	run := checkrun.Resource{
 		APIVersion: "setpoint.io/v1", Kind: "ReadOnlyCheckRun", Metadata: checkrun.Metadata{ID: "run-1"},
 		Tasks: []task.Resource{{
 			Metadata: task.Metadata{ID: "task-1"}, Spec: task.Spec{NodeID: "node-1"},
 			Result: &task.CheckResult{Items: []task.CheckItem{{
-				ID: "net.ipv4.conf.all.accept_redirects.persisted", Status: task.ItemUnsafe, Name: "persisted redirects",
+				ID: checkID, Status: task.ItemUnsafe, Name: "persisted redirects",
 				CurrentValue: "runtime=1; persisted=0", RecommendedValue: "runtime=0; persisted=0",
 				Compliant: &unsafe, Risk: "medium", Remediation: "Apply the validated target.", Applicable: true,
 				ExecutedAt: now,
 			}}},
 		}},
 	}
+	definitions := []plugin.CheckMetadata{{
+		ID: checkID,
+		Remediation: plugin.RemediationMetadata{
+			Disposition: plugin.RemediationAutoSafe,
+			OperationID: "linux.network.icmp_redirects.runtime_repair",
+			Reason:      "bounded operation",
+		},
+	}}
 
-	decorated := decorateCheckRun(run)
+	decorated := decorateCheckRun(run, definitions)
 	if len(decorated.RemediationOffers) != 1 {
 		t.Fatalf("offers=%#v", decorated.RemediationOffers)
 	}
 	if len(run.RemediationOffers) != 0 {
 		t.Fatal("decorating a response must not mutate the source resource")
+	}
+	if decorated.RemediationOffers[0].Disposition != string(plugin.RemediationAutoSafe) {
+		t.Fatalf("disposition=%q", decorated.RemediationOffers[0].Disposition)
 	}
 	if decorated.RemediationOffers[0].Editable {
 		t.Fatal("the fixed sysctl repair target must not be editable")
@@ -54,7 +67,7 @@ func TestDecorateCheckRunExposesRemediationOfferContract(t *testing.T) {
 	}
 	for _, field := range []string{
 		"check_run_id", "task_id", "check_id", "node_id", "current_value", "existing_recommended_value",
-		"recommended_value_for_this_run", "recommendation_reason", "availability", "editable", "parameter_type",
+		"recommended_value_for_this_run", "recommendation_reason", "disposition", "availability", "editable", "parameter_type",
 		"constraints", "supports_automatic_fix", "supports_rollback", "risk", "requires_restart",
 		"may_affect_connection", "may_affect_business", "operation_id", "operation_parameters",
 	} {

@@ -9,6 +9,7 @@ import type {
   DashboardSummary,
   GranularCheckDefinition,
   Node,
+  OperationBatchConfirmationResponse,
   OperationDefinition,
   OperationRun,
   OperationTarget,
@@ -170,5 +171,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ idempotency_key: idempotencyKey, plan_digest: planDigest }),
     }),
+  confirmOperationBatch: (batchId: string, sourceCheckRunId: string, confirmationIdempotencyKey: string, members: Array<{ task_id: string; check_id: string; node_id: string; run_id: string; plan_digest: string }>) =>
+    request<OperationBatchConfirmationResponse>('/api/v1/operation-batch-confirmations/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: batchId, source_check_run_id: sourceCheckRunId, confirmation_idempotency_key: confirmationIdempotencyKey, members }),
+    }),
+  operationBatchConfirmations: (checkRunId: string, offset = 0, signal?: AbortSignal) =>
+    request<{ confirmations: OperationBatchConfirmationResponse[]; limit: number; offset: number }>(`/api/v1/operation-batch-confirmations?check_run_id=${encodeURIComponent(checkRunId)}&limit=50&offset=${offset}`, { signal }),
+  operationBatchConfirmation: (batchId: string, signal?: AbortSignal) =>
+    request<OperationBatchConfirmationResponse>(`/api/v1/operation-batch-confirmations/${encodeURIComponent(batchId)}`, { signal }),
   cancelOperationRun: (id: string) => request<OperationRun>(`/api/v1/operation-runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
 }

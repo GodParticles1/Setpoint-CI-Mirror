@@ -10,14 +10,15 @@ import (
 )
 
 type supervisorLockManager struct {
-	mu          sync.Mutex
-	lease       LockLease
-	acquire     int
-	renew       int
-	release     int
-	failRenew   bool
-	now         time.Time
-	currentErr  error
+	mu                     sync.Mutex
+	lease                  LockLease
+	acquire                int
+	renew                  int
+	release                int
+	failRenew              bool
+	now                    time.Time
+	currentErr             error
+	returnLeaseForAnyOwner bool
 }
 
 func (manager *supervisorLockManager) Acquire(_ context.Context, request LockRequest) (LockLease, error) {
@@ -62,7 +63,7 @@ func (manager *supervisorLockManager) CurrentLeaseByOwner(_ context.Context, own
 	if manager.currentErr != nil {
 		return LockLease{}, false, manager.currentErr
 	}
-	if manager.lease.ID == "" || manager.lease.OwnerID != ownerID || !manager.now.Before(manager.lease.ExpiresAt) {
+	if manager.lease.ID == "" || (!manager.returnLeaseForAnyOwner && manager.lease.OwnerID != ownerID) || !manager.now.Before(manager.lease.ExpiresAt) {
 		return LockLease{}, false, nil
 	}
 	return manager.lease, true, nil
@@ -116,7 +117,7 @@ func TestLeaseSupervisorAcquireBindsRunAndRejectsDuplicateOwner(t *testing.T) {
 
 func TestLeaseSupervisorRejectsOwnerAndResourceMismatch(t *testing.T) {
 	now := time.Now().UTC()
-	manager := &supervisorLockManager{now: now}
+	manager := &supervisorLockManager{now: now, returnLeaseForAnyOwner: true}
 	resources, err := supervisedLockResources("run-1", testSupervisorTargets(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +181,7 @@ func TestLeaseSupervisorRenewFailureFailsClosed(t *testing.T) {
 	}
 }
 
-func TestLeaseSupervisorRejectsExpiredAuthority(t *testing.T) {
+func TestLeaseSupervisorClassifiesExpiredAuthorityAsAbsent(t *testing.T) {
 	now := time.Now().UTC()
 	manager := &supervisorLockManager{now: now}
 	resources, err := supervisedLockResources("run-1", testSupervisorTargets(), time.Minute)
@@ -189,7 +190,7 @@ func TestLeaseSupervisorRejectsExpiredAuthority(t *testing.T) {
 	}
 	manager.setLease(LockLease{ID: "lease-1", OwnerID: "run-1", Resources: resources, AcquiredAt: now.Add(-2 * time.Minute), ExpiresAt: now.Add(-time.Minute)})
 	supervisor := testSupervisor(t, manager, time.Minute, 10*time.Second)
-	if _, err := supervisor.Resume(context.Background(), "run-1", testSupervisorTargets()); !errors.Is(err, ErrLeaseAuthorityUnavailable) {
+	if _, err := supervisor.Resume(context.Background(), "run-1", testSupervisorTargets()); !errors.Is(err, ErrLeaseAuthoritativeAbsence) {
 		t.Fatalf("expired authority resume error = %v", err)
 	}
 }
@@ -211,15 +212,49 @@ func TestLeaseSupervisorRestartResumesOnlyProvableExistingAuthority(t *testing.T
 	if acquire != 0 {
 		t.Fatalf("restart performed Acquire %d times", acquire)
 	}
+	_, renew, _ := manager.counts()
+	if renew != 1 {
+		t.Fatalf("restart synchronous Renew calls = %d, want 1", renew)
+	}
 
 	missing := &supervisorLockManager{now: now}
 	missingSupervisor := testSupervisor(t, missing, time.Minute, 10*time.Second)
-	if _, err := missingSupervisor.Resume(context.Background(), "run-1", testSupervisorTargets()); !errors.Is(err, ErrLeaseAuthorityUnavailable) {
+	if _, err := missingSupervisor.Resume(context.Background(), "run-1", testSupervisorTargets()); !errors.Is(err, ErrLeaseAuthoritativeAbsence) {
 		t.Fatalf("missing authority resume error = %v", err)
 	}
 	acquire, _, _ = missing.counts()
 	if acquire != 0 {
 		t.Fatalf("missing authority performed Acquire %d times", acquire)
+	}
+}
+
+func TestLeaseSupervisorResumeFailsClosedWithoutAcquireOnAuthorityOrRenewFailure(t *testing.T) {
+	now := time.Now().UTC()
+	resources, err := supervisedLockResources("run-1", testSupervisorTargets(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		manager *supervisorLockManager
+	}{
+		{name: "authority", manager: &supervisorLockManager{now: now, currentErr: errors.New("authority read failed")}},
+		{name: "renew", manager: &supervisorLockManager{
+			now: now, failRenew: true,
+			lease: LockLease{ID: "lease-before-restart", OwnerID: "run-1", Resources: resources, AcquiredAt: now, ExpiresAt: now.Add(time.Minute)},
+		}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			supervisor := testSupervisor(t, testCase.manager, time.Minute, 10*time.Second)
+			if _, err := supervisor.Resume(context.Background(), "run-1", testSupervisorTargets()); !errors.Is(err, ErrLeaseAuthorityUnavailable) {
+				t.Fatalf("Resume error = %v, want ErrLeaseAuthorityUnavailable", err)
+			}
+			acquire, _, _ := testCase.manager.counts()
+			if acquire != 0 {
+				t.Fatalf("Resume fell back to Acquire %d times", acquire)
+			}
+		})
 	}
 }
 

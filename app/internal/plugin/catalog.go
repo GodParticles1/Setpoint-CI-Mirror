@@ -8,17 +8,18 @@ import (
 )
 
 type CheckMetadata struct {
-	ID               string      `json:"id"`
-	PluginID         string      `json:"plugin_id"`
-	PluginVersion    string      `json:"plugin_version"`
-	Category         string      `json:"category"`
-	Name             string      `json:"name"`
-	Description      string      `json:"description"`
-	RecommendedValue string      `json:"recommended_value"`
-	Risk             RiskLevel   `json:"risk"`
-	SupportedSystems []string    `json:"supported_systems"`
-	Parameters       []Parameter `json:"parameters"`
-	SourceRefs       []string    `json:"source_refs,omitempty"`
+	ID               string              `json:"id"`
+	PluginID         string              `json:"plugin_id"`
+	PluginVersion    string              `json:"plugin_version"`
+	Category         string              `json:"category"`
+	Name             string              `json:"name"`
+	Description      string              `json:"description"`
+	RecommendedValue string              `json:"recommended_value"`
+	Risk             RiskLevel           `json:"risk"`
+	SupportedSystems []string            `json:"supported_systems"`
+	Parameters       []Parameter         `json:"parameters"`
+	SourceRefs       []string            `json:"source_refs,omitempty"`
+	Remediation      RemediationMetadata `json:"remediation"`
 }
 
 type CheckBundle struct {
@@ -138,9 +139,7 @@ func (registry *CheckRegistry) ListPolicies() []CheckPolicy {
 	return result
 }
 
-func (registry *CheckRegistry) ResolveSelection(
-	checkIDs, bundleIDs, policyIDs []string,
-) (ResolvedCheckSelection, error) {
+func (registry *CheckRegistry) ResolveSelection(checkIDs, bundleIDs, policyIDs []string) (ResolvedCheckSelection, error) {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 	requestedChecks := normalizedCatalogIDs(checkIDs)
@@ -165,8 +164,6 @@ func (registry *CheckRegistry) ResolveSelection(
 			selected[id] = struct{}{}
 			continue
 		}
-		// Before granular checks, check_ids carried plugin IDs. Accepting an
-		// existing bundle here keeps old clients explicit and deterministic.
 		if err := addBundle(id); err != nil {
 			return ResolvedCheckSelection{}, fmt.Errorf("unknown check or legacy bundle %q", id)
 		}
@@ -208,9 +205,7 @@ func (registry *CheckRegistry) ResolveSelection(
 		sort.Strings(ids)
 		resolvedGroups = append(resolvedGroups, ResolvedCheckGroup{PluginID: pluginID, CheckIDs: ids})
 	}
-	return ResolvedCheckSelection{
-		CheckIDs: resolvedIDs, BundleIDs: requestedBundles, PolicyIDs: requestedPolicies, Groups: resolvedGroups,
-	}, nil
+	return ResolvedCheckSelection{CheckIDs: resolvedIDs, BundleIDs: requestedBundles, PolicyIDs: requestedPolicies, Groups: resolvedGroups}, nil
 }
 
 func metadataChecks(metadata Metadata) (map[string]CheckMetadata, CheckBundle) {
@@ -222,15 +217,12 @@ func metadataChecks(metadata Metadata) (map[string]CheckMetadata, CheckBundle) {
 			Category: metadata.Category, Name: definition.Name, Description: definition.Description,
 			RecommendedValue: definition.RecommendedValue, Risk: metadata.Risk,
 			SupportedSystems: append([]string(nil), metadata.SupportedSystems...),
-			Parameters:       append([]Parameter(nil), metadata.Parameters...),
-			SourceRefs:       append([]string(nil), definition.SourceRefs...),
+			Parameters:       append([]Parameter(nil), metadata.Parameters...), SourceRefs: append([]string(nil), definition.SourceRefs...),
 		}
 		ids = append(ids, definition.ID)
 	}
 	sort.Strings(ids)
-	return checks, CheckBundle{
-		ID: metadata.ID, Name: metadata.Name, Description: metadata.Description, Category: metadata.Category, CheckIDs: ids,
-	}
+	return checks, CheckBundle{ID: metadata.ID, Name: metadata.Name, Description: metadata.Description, Category: metadata.Category, CheckIDs: ids}
 }
 
 func cloneCheckMetadata(metadata CheckMetadata) CheckMetadata {

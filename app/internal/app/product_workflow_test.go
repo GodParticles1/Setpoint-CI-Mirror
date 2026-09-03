@@ -32,8 +32,27 @@ func (repo *productWorkflowRepo) GetOperationRun(_ context.Context, id string) (
 func (repo *productWorkflowRepo) ListOperationRuns(context.Context, int, int) ([]operationrun.Resource, error) {
 	return []operationrun.Resource{repo.run}, nil
 }
-func (repo *productWorkflowRepo) CancelOperationRun(context.Context, string, time.Time) (operationrun.Resource, error) {
-	return operationrun.Resource{}, errors.New("unused")
+func (repo *productWorkflowRepo) CancelOperationRun(_ context.Context, id string, at time.Time) (operationrun.Resource, error) {
+	if repo.run.Metadata.ID != id {
+		return operationrun.Resource{}, errors.New("not found")
+	}
+	current := repo.tasks[repo.run.Status.TaskID]
+	if current.Spec.OperationExecution != nil && current.Spec.OperationExecution.StageIndex > 0 {
+		repo.run.Status.Recovery = &operationrun.Recovery{Code: operationrun.RecoveryCancellationRequested, SafeNext: "rollback_applied_stages"}
+		return repo.run, nil
+	}
+	repo.run.Status.State = operation.StateCanceledBeforeApply
+	repo.run.Status.Checkpoint = "canceled_before_apply"
+	repo.run.Status.UpdatedAt = at
+	if !task.Terminal(current.Status.Phase) {
+		if current.Status.Phase == task.PhasePending {
+			current.Status.Phase = task.PhaseCanceled
+		} else {
+			current.Status.Phase = task.PhaseCancelRequested
+		}
+		repo.tasks[current.Metadata.ID] = current
+	}
+	return repo.run, nil
 }
 func (repo *productWorkflowRepo) GetTask(_ context.Context, id string) (task.Resource, error) {
 	value, ok := repo.tasks[id]
@@ -74,20 +93,48 @@ func (repo *productWorkflowRepo) List(_ context.Context, runID string) ([]operat
 }
 
 type productWorkflowLease struct {
-	lease    operation.LockLease
-	releases int
+	lease      operation.LockLease
+	acquires   int
+	resumes    int
+	releases   int
+	held       bool
+	acquireErr error
+	resumeErr  error
+	currentErr error
 }
 
 func (lease *productWorkflowLease) Acquire(context.Context, string, []operation.Target) (operation.LockLease, error) {
+	lease.acquires++
+	if lease.acquireErr != nil {
+		return operation.LockLease{}, lease.acquireErr
+	}
+	lease.held = true
 	return lease.lease, nil
 }
 func (lease *productWorkflowLease) Resume(context.Context, string, []operation.Target) (operation.LockLease, error) {
+	lease.resumes++
+	if lease.resumeErr != nil {
+		return operation.LockLease{}, lease.resumeErr
+	}
+	if !lease.held {
+		return operation.LockLease{}, operation.ErrLeaseAuthoritativeAbsence
+	}
 	return lease.lease, nil
 }
 func (lease *productWorkflowLease) CurrentLeaseByOwner(context.Context, string) (operation.LockLease, bool, error) {
+	if lease.currentErr != nil {
+		return operation.LockLease{}, false, lease.currentErr
+	}
+	if !lease.held {
+		return operation.LockLease{}, false, operation.ErrLeaseAuthorityUnavailable
+	}
 	return lease.lease, true, nil
 }
 func (lease *productWorkflowLease) Release(context.Context, string) error {
+	if !lease.held {
+		return operation.ErrLeaseAuthorityUnavailable
+	}
+	lease.held = false
 	lease.releases++
 	return nil
 }
@@ -119,10 +166,44 @@ func productWorkflowFixtureForOperation(operationID string, action task.Operatio
 		Plan:     &plan, PlanDigest: "plan-digest", Impact: &operation.Impact{Risk: operation.RiskLow},
 		Execution: &operationrun.ExecutionSnapshot{RestorePoint: restore, Apply: apply, Rollback: rollback},
 	}
-	contract := task.OperationExecutionContract{SchemaVersion: task.OperationExecutionContractVersion, OperationID: operationID, RunID: runID, Action: action, PlanDigest: run.PlanDigest, Targets: targets, Plan: plan}
-	current := task.Resource{APIVersion: "setpoint.io/v1", Kind: task.KindOperationExecutionTask, Metadata: task.Metadata{ID: taskID}, Spec: task.Spec{NodeID: "node-1", OperationID: operationID, OperationExecution: &contract}, Status: task.Status{Phase: phase}}
+	stages, err := operationrun.ExecutionStages(run)
+	if err != nil || len(stages) == 0 {
+		panic("single-node fixture has no execution stage")
+	}
+	stage := stages[0]
+	contract := task.OperationExecutionContract{
+		OperationID: operationID, RunID: runID, Action: action, PlanDigest: run.PlanDigest,
+		ParticipantNodeIDs: []string{run.Spec.NodeID}, StageIndex: 0, Stage: stage,
+		Targets: operationrun.StageTargets(run, stage), Plan: plan,
+	}
+	switch action {
+	case task.OperationActionApply:
+		contract.RestorePoint = restore
+	case task.OperationActionVerify:
+		contract.Apply = apply
+	case task.OperationActionRollback:
+		contract.RestorePoint = restore
+		contract.Apply = apply
+	case task.OperationActionVerifyRollback:
+		contract.RestorePoint = restore
+		contract.Rollback = rollback
+	}
+	frozen, digest, err := task.NewOperationExecutionContract(contract)
+	if err != nil {
+		panic(err)
+	}
+	current := task.Resource{
+		APIVersion: "setpoint.io/v1", Kind: task.KindOperationExecutionTask, Metadata: task.Metadata{ID: taskID},
+		Spec: task.Spec{
+			NodeID: stage.ExecutorNodeID, OperationID: operationID, OperationVersion: run.Spec.OperationVersion,
+			CapabilityDigest: run.Spec.CapabilityDigest, Targets: append([]operation.Target(nil), frozen.Targets...),
+			Parameters: append([]byte(nil), run.Spec.Parameters...), SecretRefs: append([]operation.SecretRef(nil), run.Spec.SecretRefs...),
+			OperationExecution: &frozen, ContractDigest: digest,
+		},
+		Status: task.Status{Phase: phase},
+	}
 	repo := &productWorkflowRepo{run: run, tasks: map[string]task.Resource{taskID: current}, journal: []operation.JournalEntry{{RunID: runID, Sequence: 1, State: state, Checkpoint: run.Status.Checkpoint, Message: "durable action result", At: now}}}
-	lease := &productWorkflowLease{lease: operation.LockLease{ID: "lease-1", OwnerID: runID, Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}}
+	lease := &productWorkflowLease{lease: operation.LockLease{ID: "lease-1", OwnerID: runID, Resources: []operation.LockResource{{Key: "node||node-1||"}}, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}, held: true}
 	execution, err := NewProductExecutionResolver(ProductExecutionCapability{OperationID: operationID, ApplyAvailable: true})
 	if err != nil {
 		panic(err)

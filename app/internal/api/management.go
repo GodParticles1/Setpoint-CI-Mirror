@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"setpoint/internal/checkrun"
+	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
 )
 
@@ -82,7 +83,7 @@ func (handler *Handler) createCheckRun(writer http.ResponseWriter, request *http
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(writer, status, decorateCheckRun(run))
+	writeJSON(writer, status, decorateCheckRun(run, handler.service.ListCheckDefinitions()))
 }
 
 func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.Request) {
@@ -95,8 +96,9 @@ func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.
 		handler.handleServiceError(writer, err)
 		return
 	}
+	definitions := handler.service.ListCheckDefinitions()
 	for index := range runs {
-		runs[index] = decorateCheckRun(runs[index])
+		runs[index] = decorateCheckRun(runs[index], definitions)
 	}
 	writeJSON(writer, http.StatusOK, protocol.CheckRunListResponse{
 		Runs: runs, Limit: normalized.Limit, Offset: normalized.Offset,
@@ -109,11 +111,15 @@ func (handler *Handler) getCheckRun(writer http.ResponseWriter, request *http.Re
 		handler.handleServiceError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, decorateCheckRun(run))
+	writeJSON(writer, http.StatusOK, decorateCheckRun(run, handler.service.ListCheckDefinitions()))
 }
 
-func decorateCheckRun(run checkrun.Resource) checkrun.Resource {
-	run.RemediationOffers = checkrun.BuildRemediationOffers(run)
+func decorateCheckRun(run checkrun.Resource, definitions []plugin.CheckMetadata) checkrun.Resource {
+	remediations := make(map[string]plugin.RemediationMetadata, len(definitions))
+	for _, definition := range definitions {
+		remediations[definition.ID] = definition.Remediation
+	}
+	run.RemediationOffers = checkrun.BuildRemediationOffers(run, remediations)
 	return run
 }
 
@@ -123,7 +129,7 @@ func (handler *Handler) cancelCheckRun(writer http.ResponseWriter, request *http
 		handler.handleServiceError(writer, err)
 		return
 	}
-	response.Run = decorateCheckRun(response.Run)
+	response.Run = decorateCheckRun(response.Run, handler.service.ListCheckDefinitions())
 	writeJSON(writer, http.StatusOK, response)
 }
 

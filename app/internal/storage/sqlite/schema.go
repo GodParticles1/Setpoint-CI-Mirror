@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = "16"
+const schemaVersion = "17"
 
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS nodes (
@@ -262,8 +262,20 @@ func (store *Store) initialize(ctx context.Context) error {
 			}
 		}
 		if _, err := transaction.ExecContext(ctx,
-			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, schemaVersion, now); err != nil {
+			`UPDATE settings SET value = '16', updated_at = ? WHERE key = 'schema_version'`, now); err != nil {
 			return fmt.Errorf("record SQLite schema v16: %w", err)
+		}
+		actual = "16"
+	}
+	if actual == "16" {
+		for _, statement := range schemaV17Statements {
+			if _, err := transaction.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migrate SQLite schema to v17: %w", err)
+			}
+		}
+		if _, err := transaction.ExecContext(ctx,
+			`UPDATE settings SET value = ?, updated_at = ? WHERE key = 'schema_version'`, schemaVersion, now); err != nil {
+			return fmt.Errorf("record SQLite schema v17: %w", err)
 		}
 		actual = schemaVersion
 	}

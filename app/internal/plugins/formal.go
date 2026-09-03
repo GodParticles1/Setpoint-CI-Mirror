@@ -39,6 +39,9 @@ func RegisterFormal(registry *plugin.CheckRegistry) error {
 			return fmt.Errorf("register formal check %s: %w", metadata.ID, err)
 		}
 	}
+	if err := registerFormalRemediation(registry); err != nil {
+		return fmt.Errorf("register formal remediation: %w", err)
+	}
 	policies := []plugin.CheckPolicy{
 		{ID: "policy.clickhouse-migration-readiness", Name: "ClickHouse 迁移就绪只读观察", Description: "ClickHouse 组件、运行、目录、容量、Replica、拓扑、Atomic EXCHANGE 与 pair 兼容性只读观察集合", BundleIDs: []string{clickhousechecks.ID}},
 		{ID: "policy.linux-host-readonly", Name: "Linux 主机只读基线", Description: "Linux 核心、网络、审计、密码声明和固定路径权限观察集合", BundleIDs: []string{linuxaudit.ID, linuxbaseline.ID, linuxfiles.ID, linuxicmpredirects.ID, linuxnetwork.ID, linuxpassword.ID}},

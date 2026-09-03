@@ -18,6 +18,7 @@ import (
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/operation/sysctlrepair"
+	"setpoint/internal/operation/xrocketreaddress"
 	"setpoint/internal/plugin"
 	"setpoint/internal/plugins"
 	"setpoint/internal/protocol"
@@ -91,11 +92,18 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	xrocketReaddressDefinition, err := xrocketreaddress.NewDefinition(commandExecutor)
+	if err != nil {
+		return err
+	}
 	operationRegistry := operation.NewRegistry()
 	if err := operationRegistry.Register(planningDefinition); err != nil {
 		return err
 	}
 	if err := operationRegistry.Register(sysctlDefinition); err != nil {
+		return err
+	}
+	if err := operationRegistry.Register(xrocketReaddressDefinition); err != nil {
 		return err
 	}
 	restoreProvider, err := sysctlrepair.NewRestoreProvider(commandExecutor)

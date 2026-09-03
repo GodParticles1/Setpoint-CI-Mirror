@@ -225,9 +225,11 @@ func (worker *TaskWorker) submitCached(ctx context.Context, entry taskJournalEnt
 		return &taskRemoteError{operation: "refresh task before result submission", err: err}
 	}
 	if current != nil && current.Metadata.ID == entry.Task.Metadata.ID && current.Status.Phase == task.PhaseCancelRequested && entry.Submission.Phase != task.PhaseCanceled {
-		submission := worker.canceledSubmission(*current)
 		entry.Task = task.Clone(*current)
-		entry.Submission = &submission
+		if entry.Task.Kind != task.KindOperationExecutionTask || entry.Submission.OperationExecutionResult == nil {
+			submission := worker.canceledSubmission(*current)
+			entry.Submission = &submission
+		}
 		if err := worker.journal.Save(entry); err != nil {
 			return &fatalTaskError{err: err}
 		}
@@ -284,9 +286,14 @@ func (worker *TaskWorker) executionFailureSubmission(resource task.Resource, cod
 func (worker *TaskWorker) executionTerminalSubmission(resource task.Resource, phase task.Phase, code, message string) task.ResultSubmission {
 	result := task.OperationExecutionResult{Error: &task.Failure{Code: code, Message: message}}
 	if resource.Spec.OperationExecution != nil {
-		result.OperationID = resource.Spec.OperationExecution.OperationID
-		result.RunID = resource.Spec.OperationExecution.RunID
-		result.Action = resource.Spec.OperationExecution.Action
+		contract := resource.Spec.OperationExecution
+		result.OperationID = contract.OperationID
+		result.RunID = contract.RunID
+		result.Action = contract.Action
+		result.ParticipantNodeIDs = append([]string(nil), contract.ParticipantNodeIDs...)
+		result.StageID = contract.Stage.ID
+		result.StageIndex = contract.StageIndex
+		result.ExecutorNodeID = contract.Stage.ExecutorNodeID
 	}
 	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result}
 }

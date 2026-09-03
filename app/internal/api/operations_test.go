@@ -17,6 +17,7 @@ import (
 	"setpoint/internal/domain"
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
+	"setpoint/internal/operation/xrocketreaddress"
 	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
 	storage "setpoint/internal/storage/sqlite"
@@ -111,6 +112,50 @@ func TestOperationsAPIRejectsMalformedOversizedAndNonManagementAccess(t *testing
 	_ = store
 }
 
+func TestOperationsAPIExposesXRocketAndPersistsNormalizedParameters(t *testing.T) {
+	handler, _, _ := newOperationsAPIHandler(t)
+	catalog := managementRequest(t, handler, http.MethodGet, "/api/v1/operations/"+xrocketreaddress.OperationID, nil)
+	if catalog.Code != http.StatusOK {
+		t.Fatalf("catalog status=%d body=%s", catalog.Code, catalog.Body.String())
+	}
+	var definition struct {
+		Metadata operation.Metadata `json:"metadata"`
+	}
+	if err := json.Unmarshal(catalog.Body.Bytes(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition.Metadata.ID != xrocketreaddress.OperationID || len(definition.Metadata.Parameters) != 5 {
+		t.Fatalf("definition=%#v", definition)
+	}
+
+	request := protocol.CreateOperationRunRequest{APIVersion: "setpoint.io/v1", Kind: "OperationRun"}
+	request.Metadata.IdempotencyKey = "xrocket-api-run"
+	request.Spec.OperationID = xrocketreaddress.OperationID
+	request.Spec.NodeID = "node-1"
+	request.Spec.Targets = []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
+	request.Spec.Parameters = json.RawMessage(`{"master_target_address":" 198.51.100.10 ","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":"24","gateway_address":"198.51.100.1"}`)
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := managementRequest(t, handler, http.MethodPost, "/api/v1/operation-runs", body)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var run struct {
+		Spec struct {
+			OperationID string          `json:"operation_id"`
+			Parameters  json.RawMessage `json:"parameters"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Spec.OperationID != xrocketreaddress.OperationID || string(run.Spec.Parameters) != `{"gateway_address":"198.51.100.1","master_target_address":"198.51.100.10","prefix_length":24,"slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12"}` {
+		t.Fatalf("run spec=%#v", run.Spec)
+	}
+}
+
 func newOperationsAPIHandler(t *testing.T) (http.Handler, *storage.Store, *app.Service) {
 	t.Helper()
 	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "setpoint.db"))
@@ -129,6 +174,9 @@ func newOperationsAPIHandler(t *testing.T) (http.Handler, *storage.Store, *app.S
 	}
 	operations := operation.NewRegistry()
 	if err := operations.Register(clickhouse.NewCatalogDescriptor()); err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.Register(xrocketreaddress.NewCatalogDescriptor()); err != nil {
 		t.Fatal(err)
 	}
 	operationService, err := app.NewOperationsService(store, store, operations, time.Minute)
