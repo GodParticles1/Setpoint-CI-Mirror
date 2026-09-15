@@ -3,10 +3,11 @@ import {
   ALLOWED_OPENAI_MODELS,
   INVOCATION_STATES,
   createOpenAITransport,
-  executeObserveOnly,
   selectOpenAIModel,
   validateWakeEnvelope,
 } from "./openai-core.js";
+import { createGitHubReadClient } from "./github-read-tools.js";
+import { executeLiveTakeover } from "./live-takeover.js";
 
 const INVOCATION_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const RESERVATION_STALE_MS = 60 * 1000;
@@ -17,6 +18,7 @@ const ERROR_CLASS_RE = /^[A-Z0-9_]{0,64}$/;
 interface OpenAIConsumerEnv {
   OPENAI_API_KEY: string;
   OPENAI_MODEL?: string;
+  GITHUB_READ_TOKEN: string;
   MODEL_INVOCATION_REGISTRY: DurableObjectNamespace;
 }
 
@@ -56,6 +58,7 @@ interface RegistryRpc {
   reserve(input: { delivery: string; model: string }): Promise<ReservationResult>;
   markDispatching(input: { delivery: string }): Promise<void>;
   markPreDispatchFailure(input: { delivery: string; errorClass: string }): Promise<void>;
+  markPreDispatchTerminal(input: { delivery: string; errorClass: string }): Promise<void>;
   markCompleted(input: { delivery: string; responseId: string; usage: UsageMetadata }): Promise<void>;
   markTerminal(input: { delivery: string; state: string; responseId: string; errorClass: string; usage: UsageMetadata }): Promise<void>;
   markUncertain(input: { delivery: string; responseId: string; errorClass: string; usage: UsageMetadata }): Promise<void>;
@@ -160,6 +163,12 @@ export class ModelInvocationRegistry extends DurableObject<OpenAIConsumerEnv> {
     this.ctx.storage.sql.exec(`UPDATE model_invocations SET status = ?, error_class = ?, updated_at_ms = ? WHERE delivery = ?`, INVOCATION_STATES.FAILED_PRE_DISPATCH, safeErrorClass(input.errorClass), now, input.delivery);
   }
 
+  async markPreDispatchTerminal(input: { delivery: string; errorClass: string }): Promise<void> {
+    validateDelivery(input.delivery); const now = Date.now(); const current = this.getRow(input.delivery);
+    if (!current || current.status !== INVOCATION_STATES.RESERVED) throw new Error("invocation is not reserved");
+    this.ctx.storage.sql.exec(`UPDATE model_invocations SET status = ?, error_class = ?, updated_at_ms = ?, completed_ms = ? WHERE delivery = ?`, INVOCATION_STATES.INVALID_OUTPUT, safeErrorClass(input.errorClass), now, now, input.delivery);
+  }
+
   async markCompleted(input: { delivery: string; responseId: string; usage: UsageMetadata }): Promise<void> { await this.finishInvocation({ ...input, state: INVOCATION_STATES.COMPLETED, errorClass: "" }); }
   async markTerminal(input: { delivery: string; state: string; responseId: string; errorClass: string; usage: UsageMetadata }): Promise<void> {
     if (![INVOCATION_STATES.REFUSED, INVOCATION_STATES.INCOMPLETE, INVOCATION_STATES.INVALID_OUTPUT].some((state) => state === input.state)) throw new Error("invalid terminal state");
@@ -179,19 +188,22 @@ export default {
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
       const rawEnvelope = message.body;
-      if (!validateWakeEnvelope(rawEnvelope)) { safeLog({ type: "openai_observe_only", result: "INVALID_QUEUE_ENVELOPE" }); message.ack(); continue; }
+      if (!validateWakeEnvelope(rawEnvelope)) { safeLog({ type: "github_read_live_takeover", result: "INVALID_QUEUE_ENVELOPE" }); message.ack(); continue; }
       const envelope = rawEnvelope as WakeEnvelope;
       let model: string;
       try { model = selectOpenAIModel(env.OPENAI_MODEL); }
-      catch { safeLog({ type: "openai_observe_only", delivery: envelope.delivery, result: "OPENAI_MODEL_NOT_ALLOWLISTED" }); message.retry({ delaySeconds: 30 }); continue; }
+      catch { safeLog({ type: "github_read_live_takeover", delivery: envelope.delivery, result: "OPENAI_MODEL_NOT_ALLOWLISTED" }); message.retry({ delaySeconds: 30 }); continue; }
       const registry = env.MODEL_INVOCATION_REGISTRY.getByName(envelope.delivery) as unknown as RegistryRpc;
       const transport = createOpenAITransport({ apiKey: env.OPENAI_API_KEY, model });
+      let githubClient;
+      try { githubClient = createGitHubReadClient({ token: env.GITHUB_READ_TOKEN }); }
+      catch { safeLog({ type: "github_read_live_takeover", delivery: envelope.delivery, result: "GITHUB_READ_TOKEN_MISSING" }); message.retry({ delaySeconds: 30 }); continue; }
       try {
-        const outcome = await executeObserveOnly({ envelope, registry, transport });
-        safeLog({ type: "openai_observe_only", delivery: envelope.delivery, state: outcome.state, replay: outcome.replay === true, response_id: outcome.responseId || "", error_class: outcome.errorClass || "", leader_decision: outcome.decision?.LEADER_DECISION || "", lane_state: outcome.decision?.LANE_STATE || "", candidate_state: outcome.decision?.CANDIDATE_STATE || "", blocker_class: outcome.decision?.BLOCKER_CLASS || "", github_mutation_count: 0 });
+        const outcome: any = await executeLiveTakeover({ envelope, registry, transport, githubClient });
+        safeLog({ type: "github_read_live_takeover", delivery: envelope.delivery, state: outcome.state, replay: outcome.replay === true, response_id: outcome.responseId || "", error_class: outcome.errorClass || "", leader_decision: outcome.decision?.LEADER_DECISION || "", lane_state: outcome.decision?.LANE_STATE || "", candidate_state: outcome.decision?.CANDIDATE_STATE || "", blocker_class: outcome.decision?.BLOCKER_CLASS || "", fail_closed: outcome.failClosed === true, github_mutation_count: 0 });
         if (outcome.queueAction === "retry") message.retry({ delaySeconds: 30 }); else message.ack();
       } catch {
-        safeLog({ type: "openai_observe_only", delivery: envelope.delivery, result: "CONSUMER_INTERNAL_ERROR" });
+        safeLog({ type: "github_read_live_takeover", delivery: envelope.delivery, result: "CONSUMER_INTERNAL_ERROR", github_mutation_count: 0 });
         message.retry({ delaySeconds: 30 });
       }
     }
