@@ -1,0 +1,165 @@
+name: Control Plane Public CI
+
+on:
+  push:
+    branches:
+      - 'control-plane-ci-*'
+    paths:
+      - 'control-plane/**'
+      - '.control-plane-mirror/provenance.json'
+      - '.github/workflows/control-plane-public-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    name: Verify control-plane projection provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify exact private-source projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import subprocess
+
+          provenance_path = pathlib.Path(".control-plane-mirror/provenance.json")
+          p = json.loads(provenance_path.read_text(encoding="utf-8"))
+
+          assert p["schema"] == "setpoint-control-plane-public-mirror-v1"
+          assert p["source_private_repo"] == "GodParticles1/github-control-plane-coordinator"
+          assert re.fullmatch(r"[0-9a-f]{40}", p["source_private_sha"])
+          assert p["secrets_excluded"] is True
+
+          files = p["projected_files"]
+          projected = [item["projected_path"] for item in files]
+          assert len(projected) == len(set(projected))
+          actual = sorted(
+              line.strip()
+              for line in subprocess.check_output(
+                  ["git", "ls-files", "control-plane"], text=True
+              ).splitlines()
+              if line.strip()
+          )
+          assert actual == sorted(projected), (actual, sorted(projected))
+
+          canonical = []
+          for item in sorted(files, key=lambda x: x["projected_path"]):
+              source_path = item["source_path"]
+              projected_path = item["projected_path"]
+              expected_blob = item["source_blob_sha"]
+              assert projected_path == f"control-plane/{source_path}"
+              actual_blob = subprocess.check_output(
+                  ["git", "hash-object", projected_path], text=True
+              ).strip()
+              assert actual_blob == expected_blob, (projected_path, actual_blob, expected_blob)
+              canonical.append(f"{source_path}\t{projected_path}\t{expected_blob}\n")
+
+          digest = hashlib.sha256("".join(canonical).encode()).hexdigest()
+          assert digest == p["projection_tree_hash_sha256"], (digest, p["projection_tree_hash_sha256"])
+
+          workflow_bytes = pathlib.Path(
+              ".github/workflows/control-plane-public-ci.yml"
+          ).read_bytes()
+          workflow_digest = hashlib.sha256(workflow_bytes).hexdigest()
+          assert workflow_digest == p["public_ci_workflow_sha256"], (
+              workflow_digest,
+              p["public_ci_workflow_sha256"],
+          )
+
+          print("CONTROL_PLANE_PROVENANCE=PASS")
+          print("PRIVATE_SOURCE_SHA=" + p["source_private_sha"])
+          print("PROJECTION_TREE_HASH_SHA256=" + digest)
+          print("PUBLIC_CI_WORKFLOW_SHA256=" + workflow_digest)
+          PY
+
+  validate:
+    name: Validate exact projected control-plane source
+    needs: provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate Cloudflare types
+        run: npm run cf-typegen
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Deterministic tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find test -type f -name '*.test.mjs' -print -quit 2>/dev/null | grep -q .; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
+              npm test
+            else
+              node --test test/*.test.mjs
+            fi
+          else
+            echo "No deterministic test files at this exact source SHA"
+          fi
+
+      - name: Coordinator Wrangler dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:coordinator'] ? 0 : 1)"; then
+            npm run dry-run:coordinator
+          else
+            npx wrangler deploy --dry-run --config wrangler.jsonc --outdir dist-dryrun/coordinator
+          fi
+
+      - name: Async ingress Wrangler dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f wrangler.async-ingress.jsonc ]; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:async'] ? 0 : 1)"; then
+              npm run dry-run:async
+            else
+              npx wrangler deploy --dry-run --config wrangler.async-ingress.jsonc --outdir dist-dryrun/async-ingress
+            fi
+          else
+            echo "Async ingress config not present at this exact source SHA"
+          fi
+
+      - name: OpenAI observer Wrangler dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f wrangler.openai-observer.jsonc ]; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:openai-observer'] ? 0 : 1)"; then
+              npm run dry-run:openai-observer
+            else
+              npx wrangler deploy --dry-run --config wrangler.openai-observer.jsonc --outdir dist-dryrun/openai-observer
+            fi
+          else
+            echo "OpenAI observer config not present at this exact source SHA"
+          fi
+
+      - name: Git diff check
+        working-directory: .
+        run: git diff --check

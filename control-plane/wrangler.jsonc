@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "github-control-plane-coordinator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-10",
+  "workers_dev": false,
+  "preview_urls": false,
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ControlPlaneCoordinator"
+      ]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "ControlPlaneCoordinator",
+        "name": "CONTROL_PLANE_COORDINATOR"
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true
+}

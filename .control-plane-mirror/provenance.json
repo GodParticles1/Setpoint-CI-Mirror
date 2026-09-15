@@ -1,0 +1,31 @@
+{
+  "schema": "setpoint-control-plane-public-mirror-v1",
+  "source_private_repo": "GodParticles1/github-control-plane-coordinator",
+  "source_private_sha": "30aa5f1f3310fdeb7fab1e95f9d652337b9de212",
+  "source_private_ci_blob_sha": "cc4a9e0a6e73127f8892569577e98e22c5176750",
+  "projected_files": [
+    {
+      "source_path": "package.json",
+      "projected_path": "control-plane/package.json",
+      "source_blob_sha": "5f93c317536fd6c4a21ef7ce2b19e064350144a5"
+    },
+    {
+      "source_path": "src/index.ts",
+      "projected_path": "control-plane/src/index.ts",
+      "source_blob_sha": "4885627c70bfe070dd6760b5e50b7438d629d048"
+    },
+    {
+      "source_path": "tsconfig.json",
+      "projected_path": "control-plane/tsconfig.json",
+      "source_blob_sha": "e9aa895400002c4be4fdbd843e4b00c31f1ab491"
+    },
+    {
+      "source_path": "wrangler.jsonc",
+      "projected_path": "control-plane/wrangler.jsonc",
+      "source_blob_sha": "3d3a5eca931a7670b4a6e859f286cbafbeb05d69"
+    }
+  ],
+  "projection_tree_hash_sha256": "4b778d7a31d4013021cc75634cecff7e1d1fd88866b04fa713b7520bd85c1e13",
+  "public_ci_workflow_sha256": "bbde13feac6011b2b4bb2aa97f323185880600ca996cac6cd52010ff5e8b75c0",
+  "secrets_excluded": true
+}
