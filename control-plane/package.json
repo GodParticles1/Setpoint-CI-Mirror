@@ -2,11 +2,15 @@
   "name": "github-control-plane-coordinator",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test": "node --test test/*.test.mjs",
+    "dry-run:coordinator": "wrangler deploy --dry-run --config wrangler.jsonc --outdir dist-dryrun/coordinator",
+    "dry-run:async": "wrangler deploy --dry-run --config wrangler.async-ingress.jsonc --outdir dist-dryrun/async-ingress"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

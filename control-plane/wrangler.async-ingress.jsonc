@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "setpoint-github-webhook",
+  "main": "src/async-ingress.ts",
+  "compatibility_date": "2026-09-10",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONTROL_PLANE_COORDINATOR",
+        "class_name": "ControlPlaneCoordinator",
+        "script_name": "github-control-plane-coordinator"
+      },
+      {
+        "name": "ASYNC_DISPATCH_OUTBOX",
+        "class_name": "AsyncDispatchOutbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "async-outbox-v1",
+      "new_sqlite_classes": ["AsyncDispatchOutbox"]
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "LEADER_QUEUE",
+        "queue": "setpoint-leader-events"
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true
+}

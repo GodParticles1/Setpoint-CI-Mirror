@@ -1,31 +1,19 @@
 {
   "schema": "setpoint-control-plane-public-mirror-v1",
   "source_private_repo": "GodParticles1/github-control-plane-coordinator",
-  "source_private_sha": "30aa5f1f3310fdeb7fab1e95f9d652337b9de212",
-  "source_private_ci_blob_sha": "cc4a9e0a6e73127f8892569577e98e22c5176750",
+  "source_private_sha": "7977002f9b61cbcd1912c3fe55eaa79ca1b8154c",
+  "source_private_ci_blob_sha": "988011cf6bece382de1e335082819ea9560fe3cc",
   "projected_files": [
-    {
-      "source_path": "package.json",
-      "projected_path": "control-plane/package.json",
-      "source_blob_sha": "5f93c317536fd6c4a21ef7ce2b19e064350144a5"
-    },
-    {
-      "source_path": "src/index.ts",
-      "projected_path": "control-plane/src/index.ts",
-      "source_blob_sha": "4885627c70bfe070dd6760b5e50b7438d629d048"
-    },
-    {
-      "source_path": "tsconfig.json",
-      "projected_path": "control-plane/tsconfig.json",
-      "source_blob_sha": "e9aa895400002c4be4fdbd843e4b00c31f1ab491"
-    },
-    {
-      "source_path": "wrangler.jsonc",
-      "projected_path": "control-plane/wrangler.jsonc",
-      "source_blob_sha": "3d3a5eca931a7670b4a6e859f286cbafbeb05d69"
-    }
+    {"source_path":"package.json","projected_path":"control-plane/package.json","source_blob_sha":"5650557c7ab4966fad17972194ca639fadf5b69e"},
+    {"source_path":"src/async-ingress.ts","projected_path":"control-plane/src/async-ingress.ts","source_blob_sha":"63083037785ad25c88b3b74b12e3718caf47e9ce"},
+    {"source_path":"src/async-policy.js","projected_path":"control-plane/src/async-policy.js","source_blob_sha":"6ba1ac1b6ac27b5b68885506e1e88dc34df1c37c"},
+    {"source_path":"src/index.ts","projected_path":"control-plane/src/index.ts","source_blob_sha":"4885627c70bfe070dd6760b5e50b7438d629d048"},
+    {"source_path":"test/async-policy.test.mjs","projected_path":"control-plane/test/async-policy.test.mjs","source_blob_sha":"f495dfb9eea94faf2b51b2cda24a6ff1aebeeba0"},
+    {"source_path":"tsconfig.json","projected_path":"control-plane/tsconfig.json","source_blob_sha":"e9aa895400002c4be4fdbd843e4b00c31f1ab491"},
+    {"source_path":"wrangler.async-ingress.jsonc","projected_path":"control-plane/wrangler.async-ingress.jsonc","source_blob_sha":"9366caa29da03af97e1b5d0df52a4e826cf6d9c1"},
+    {"source_path":"wrangler.jsonc","projected_path":"control-plane/wrangler.jsonc","source_blob_sha":"3d3a5eca931a7670b4a6e859f286cbafbeb05d69"}
   ],
-  "projection_tree_hash_sha256": "4b778d7a31d4013021cc75634cecff7e1d1fd88866b04fa713b7520bd85c1e13",
+  "projection_tree_hash_sha256": "26e1d37ead64071b55b9e6f58d289994cf52214c2ce986e603efb1c7dd23112f",
   "public_ci_workflow_sha256": "bbde13feac6011b2b4bb2aa97f323185880600ca996cac6cd52010ff5e8b75c0",
   "secrets_excluded": true
 }
