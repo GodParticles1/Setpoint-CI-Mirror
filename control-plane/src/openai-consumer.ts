@@ -196,7 +196,12 @@ export default {
       const registry = env.MODEL_INVOCATION_REGISTRY.getByName(envelope.delivery) as unknown as RegistryRpc;
       const transport = createOpenAITransport({ apiKey: env.OPENAI_API_KEY, model });
       let githubClient;
-      try { githubClient = createGitHubReadClient({ token: env.GITHUB_READ_TOKEN.trim() }); }
+      try {
+        githubClient = createGitHubReadClient({
+          token: env.GITHUB_READ_TOKEN.trim(),
+          fetchFn: (input, init) => fetch(input, { ...init, redirect: "manual" }),
+        });
+      }
       catch { safeLog({ type: "github_read_live_takeover", delivery: envelope.delivery, result: "GITHUB_READ_TOKEN_MISSING" }); message.retry({ delaySeconds: 30 }); continue; }
       try {
         const outcome: any = await executeLiveTakeover({ envelope, registry, transport, githubClient });

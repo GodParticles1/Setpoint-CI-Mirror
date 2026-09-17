@@ -1,7 +1,7 @@
 {
   "schema": "setpoint-control-plane-public-mirror-v1",
   "source_private_repo": "GodParticles1/github-control-plane-coordinator",
-  "source_private_sha": "cd9ddbc45c4264adeacd22e73f043d6f3707f827",
+  "source_private_sha": "4045b3409a68d39f0ad27283df3cf6d04a96f68f",
   "source_private_ci_blob_sha": "08c1f462413ce8b3f2873f3861ee67aa91e9b2df",
   "projected_files": [
     {"source_path":"package.json","projected_path":"control-plane/package.json","source_blob_sha":"de3077fab81463713227e29eab449f261dfbb7a5"},
@@ -11,10 +11,10 @@
     {"source_path":"src/index.ts","projected_path":"control-plane/src/index.ts","source_blob_sha":"4885627c70bfe070dd6760b5e50b7438d629d048"},
     {"source_path":"src/live-evidence-contract.js","projected_path":"control-plane/src/live-evidence-contract.js","source_blob_sha":"5cc50f70f709405a41a2d6d147f7b5543d85d3c1"},
     {"source_path":"src/live-takeover.js","projected_path":"control-plane/src/live-takeover.js","source_blob_sha":"f87ae944436bcac5e34d7a0e62858fe889f4dfbf"},
-    {"source_path":"src/openai-consumer.ts","projected_path":"control-plane/src/openai-consumer.ts","source_blob_sha":"84a50b834fa575531e028fcf1be62adffcb276d5"},
+    {"source_path":"src/openai-consumer.ts","projected_path":"control-plane/src/openai-consumer.ts","source_blob_sha":"1f4806f5546ee2050a4f28875f914dc94fc228ea"},
     {"source_path":"src/openai-core.js","projected_path":"control-plane/src/openai-core.js","source_blob_sha":"ed98d1abb35bfc063c52f61082ff80a25fb33f0c"},
     {"source_path":"test/async-policy.test.mjs","projected_path":"control-plane/test/async-policy.test.mjs","source_blob_sha":"f495dfb9eea94faf2b51b2cda24a6ff1aebeeba0"},
-    {"source_path":"test/github-read-token-normalization.test.mjs","projected_path":"control-plane/test/github-read-token-normalization.test.mjs","source_blob_sha":"cfafd22e70f0f7466f7770ae20db1f2239217104"},
+    {"source_path":"test/github-read-token-normalization.test.mjs","projected_path":"control-plane/test/github-read-token-normalization.test.mjs","source_blob_sha":"a7ce6d9733f1d6be6016b5b80e1ae41053a82946"},
     {"source_path":"test/live-evidence-contract-correction.test.mjs","projected_path":"control-plane/test/live-evidence-contract-correction.test.mjs","source_blob_sha":"f95628eb5a5edbc9694350ade07f080ee14617b8"},
     {"source_path":"test/live-takeover.test.mjs","projected_path":"control-plane/test/live-takeover.test.mjs","source_blob_sha":"3f89bc35260d0a8a6d411074fb104972822f1e93"},
     {"source_path":"test/openai-core.test.mjs","projected_path":"control-plane/test/openai-core.test.mjs","source_blob_sha":"669eda8e59a35c61993fa849169bb0874ffacd2a"},
@@ -23,7 +23,7 @@
     {"source_path":"wrangler.jsonc","projected_path":"control-plane/wrangler.jsonc","source_blob_sha":"3d3a5eca931a7670b4a6e859f286cbafbeb05d69"},
     {"source_path":"wrangler.openai-observer.jsonc","projected_path":"control-plane/wrangler.openai-observer.jsonc","source_blob_sha":"aec4a450d97ec0e6173593b47860586bf1f83524"}
   ],
-  "projection_tree_hash_sha256": "50934f16450cedc6880bc5005883a2024683193c521db0c79c18ca021dba7ab0",
+  "projection_tree_hash_sha256": "a9a48847c74654d6f73d8b04e4eae6e1d7cefb40827aff1423464f0a4340927b",
   "public_ci_workflow_sha256": "bbde13feac6011b2b4bb2aa97f323185880600ca996cac6cd52010ff5e8b75c0",
   "secrets_excluded": true
 }
