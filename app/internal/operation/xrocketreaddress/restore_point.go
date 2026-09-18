@@ -25,8 +25,10 @@ const (
 )
 
 type restorePointProvider struct {
-	probe discoveryProbe
-	now   func() time.Time
+	probe              discoveryProbe
+	now                func() time.Time
+	recoveryCollector  RecoveryArtifactCollector
+	rollbackInspector  LocalRollbackInspectionAdapter
 }
 
 type restorePointManifest struct {
@@ -38,8 +40,9 @@ type restorePointManifest struct {
 	StageIndex         int                `json:"stage_index"`
 	NodeID             string             `json:"node_id"`
 	ParticipantNodeIDs []string           `json:"participant_node_ids"`
-	Role               string             `json:"role"`
-	Before             restoreBeforeState `json:"before"`
+	Role               string                    `json:"role"`
+	Before             restoreBeforeState        `json:"before"`
+	Recovery           *RecoveryArtifactContract `json:"recovery,omitempty"`
 }
 
 type restoreBeforeState struct {
@@ -136,6 +139,20 @@ func NewRestorePointProvider(commandExecutor executor.CommandExecutor) (operatio
 	}, nil
 }
 
+func newRestorePointProviderWithRecovery(commandExecutor executor.CommandExecutor, collector RecoveryArtifactCollector, inspector LocalRollbackInspectionAdapter) (*restorePointProvider, error) {
+	if collector == nil || inspector == nil {
+		return nil, errors.New("xRocket rollback recovery collector and inspector are required")
+	}
+	provider, err := NewRestorePointProvider(commandExecutor)
+	if err != nil {
+		return nil, err
+	}
+	value := provider.(*restorePointProvider)
+	value.recoveryCollector = collector
+	value.rollbackInspector = inspector
+	return value, nil
+}
+
 func (provider *restorePointProvider) ID() string { return RestorePointProviderID }
 
 func (provider *restorePointProvider) Create(ctx context.Context, request operation.RestorePointRequest) (operation.RestorePoint, error) {
@@ -185,6 +202,20 @@ func (provider *restorePointProvider) Create(ctx context.Context, request operat
 		Role:               role,
 		Before:             before,
 	}
+	if provider.recoveryCollector != nil {
+		if stageIndex < 0 || stageIndex >= len(canonicalStages) {
+			return operation.RestorePoint{}, errors.New("xRocket recovery stage index is invalid")
+		}
+		manifest.SchemaVersion = RestorePointRollbackSchema
+		owner := recoveryOwnerFromManifest(manifest)
+		recovery, captureErr := provider.recoveryCollector.Capture(ctx, RecoveryArtifactCaptureRequest{
+			Owner: owner, StageKind: string(canonicalStages[stageIndex].Kind), Before: before,
+		})
+		if captureErr != nil {
+			return operation.RestorePoint{}, fmt.Errorf("capture xRocket recovery artifacts: %w", captureErr)
+		}
+		manifest.Recovery = &recovery
+	}
 	if err := validateRestoreManifest(manifest); err != nil {
 		return operation.RestorePoint{}, err
 	}
@@ -203,9 +234,21 @@ func (provider *restorePointProvider) Create(ctx context.Context, request operat
 		Targets:     append([]operation.Target(nil), request.Targets...),
 		CreatedAt:   createdAt,
 		Manifest: operation.Artifact{
-			SchemaVersion: RestorePointSchema,
+			SchemaVersion: manifest.SchemaVersion,
 			Payload:       payload,
 		},
+	}
+	if manifest.Recovery != nil {
+		recoveryDigest, digestErr := recoveryContractDigest(*manifest.Recovery)
+		if digestErr != nil {
+			return operation.RestorePoint{}, digestErr
+		}
+		point.Evidence = append(point.Evidence, operation.EvidenceRef{
+			ID: manifest.Recovery.Owner.OwnerID, Kind: "xrocket_recovery_owner", SHA256: recoveryDigest,
+		})
+		for _, artifact := range manifest.Recovery.Artifacts {
+			point.Evidence = append(point.Evidence, operation.EvidenceRef{ID: artifact.ID, Kind: artifact.Kind, SHA256: artifact.SHA256})
+		}
 	}
 	if request.Retention > 0 {
 		expires := createdAt.Add(request.Retention)
@@ -238,8 +281,11 @@ func (*restorePointProvider) Restore(context.Context, operation.RestorePoint, op
 	return operation.RollbackResult{}, errApplyMechanismUnverified
 }
 
-func (*restorePointProvider) VerifyRestored(context.Context, operation.RestorePoint, operation.RollbackResult) (operation.Verification, error) {
-	return operation.Verification{}, errApplyMechanismUnverified
+func (provider *restorePointProvider) VerifyRestored(ctx context.Context, point operation.RestorePoint, result operation.RollbackResult) (operation.Verification, error) {
+	if provider.rollbackInspector == nil {
+		return operation.Verification{}, errApplyMechanismUnverified
+	}
+	return verifyRestoreProviderRollback(ctx, provider.rollbackInspector, point, result)
 }
 
 func (provider *restorePointProvider) captureBeforeState(ctx context.Context, plan executionPlan, role, expectedLocal, expectedPeer string) (restoreBeforeState, error) {
@@ -502,7 +548,7 @@ func validateRestoreTargets(targets []operation.Target, nodeID string) error {
 }
 
 func validateRestoreManifest(manifest restorePointManifest) error {
-	if manifest.SchemaVersion != RestorePointSchema || manifest.OperationID != OperationID || manifest.OperationVersion != Metadata().Version {
+	if (manifest.SchemaVersion != RestorePointSchema && manifest.SchemaVersion != RestorePointRollbackSchema) || manifest.OperationID != OperationID || manifest.OperationVersion != Metadata().Version {
 		return errors.New("xRocket restore manifest identity is invalid")
 	}
 	if strings.TrimSpace(manifest.RunID) == "" || strings.TrimSpace(manifest.StageID) == "" || strings.TrimSpace(manifest.NodeID) == "" {
@@ -525,7 +571,16 @@ func validateRestoreManifest(manifest restorePointManifest) error {
 	if manifest.NodeID != manifest.ParticipantNodeIDs[0] && manifest.NodeID != manifest.ParticipantNodeIDs[1] {
 		return errors.New("xRocket restore manifest node is not a participant")
 	}
-	return validateRestoreBeforeState(manifest.Before)
+	if err := validateRestoreBeforeState(manifest.Before); err != nil {
+		return err
+	}
+	if manifest.SchemaVersion == RestorePointRollbackSchema {
+		return validateRecoveryContract(manifest)
+	}
+	if manifest.Recovery != nil {
+		return errors.New("xRocket v1 restore manifest cannot carry rollback recovery artifacts")
+	}
+	return nil
 }
 
 func validateRestoreBeforeState(before restoreBeforeState) error {
@@ -569,7 +624,7 @@ func decodeRestoreManifest(point operation.RestorePoint) (restorePointManifest, 
 	if point.ProviderID != RestorePointProviderID {
 		return restorePointManifest{}, fmt.Errorf("unsupported xRocket restore provider %q", point.ProviderID)
 	}
-	if point.Manifest.SchemaVersion != RestorePointSchema {
+	if point.Manifest.SchemaVersion != RestorePointSchema && point.Manifest.SchemaVersion != RestorePointRollbackSchema {
 		return restorePointManifest{}, fmt.Errorf("unsupported xRocket restore schema %q", point.Manifest.SchemaVersion)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(point.Manifest.Payload))
@@ -584,6 +639,9 @@ func decodeRestoreManifest(point operation.RestorePoint) (restorePointManifest, 
 			return restorePointManifest{}, errors.New("xRocket restore manifest contains trailing JSON")
 		}
 		return restorePointManifest{}, fmt.Errorf("decode xRocket restore manifest trailing content: %w", err)
+	}
+	if manifest.SchemaVersion != point.Manifest.SchemaVersion {
+		return restorePointManifest{}, errors.New("xRocket restore manifest schema differs from artifact schema")
 	}
 	if err := validateRestoreManifest(manifest); err != nil {
 		return restorePointManifest{}, err

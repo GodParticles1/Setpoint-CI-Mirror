@@ -18,10 +18,12 @@ var errApplyMechanismUnverified = errors.New(applyMechanismGap)
 type profileDiscoverer func(context.Context, discoveryState) (runtimeProfile, error)
 
 type Definition struct {
-	probe           discoveryProbe
-	profileDiscover profileDiscoverer
-	mutator         LocalMutationAdapter
-	inspector       LocalInspectionAdapter
+	probe             discoveryProbe
+	profileDiscover   profileDiscoverer
+	mutator           LocalMutationAdapter
+	inspector         LocalInspectionAdapter
+	rollbackMutator   LocalRollbackMutationAdapter
+	rollbackInspector LocalRollbackInspectionAdapter
 }
 
 func NewDefinition(commandExecutor executor.CommandExecutor) (*Definition, error) {
@@ -47,6 +49,12 @@ func NewDefinitionWithStageAdapters(commandExecutor executor.CommandExecutor, mu
 	}
 	definition.mutator = mutator
 	definition.inspector = inspector
+	if rollbackMutator, ok := mutator.(LocalRollbackMutationAdapter); ok {
+		definition.rollbackMutator = rollbackMutator
+	}
+	if rollbackInspector, ok := inspector.(LocalRollbackInspectionAdapter); ok {
+		definition.rollbackInspector = rollbackInspector
+	}
 	return definition, nil
 }
 
@@ -222,12 +230,18 @@ func (definition *Definition) Verify(ctx context.Context, input operation.Verify
 	return definition.verifyStage(ctx, input)
 }
 
-func (*Definition) Rollback(context.Context, operation.RollbackInput) (operation.RollbackResult, error) {
-	return operation.RollbackResult{}, errApplyMechanismUnverified
+func (definition *Definition) Rollback(ctx context.Context, input operation.RollbackInput) (operation.RollbackResult, error) {
+	if definition.rollbackMutator == nil || definition.rollbackInspector == nil {
+		return operation.RollbackResult{}, errApplyMechanismUnverified
+	}
+	return definition.rollbackStage(ctx, input)
 }
 
-func (*Definition) VerifyRollback(context.Context, operation.VerifyRollbackInput) (operation.Verification, error) {
-	return operation.Verification{}, errApplyMechanismUnverified
+func (definition *Definition) VerifyRollback(ctx context.Context, input operation.VerifyRollbackInput) (operation.Verification, error) {
+	if definition.rollbackInspector == nil {
+		return operation.Verification{}, errApplyMechanismUnverified
+	}
+	return definition.verifyRollbackStage(ctx, input)
 }
 
 func decodeDiscovery(artifact operation.Artifact) (discoveryState, error) {
