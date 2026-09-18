@@ -18,6 +18,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 		config.DatabasePath != defaultDatabasePath || config.MaxHeaderBytes != defaultMaxHeaderBytes {
 		t.Fatalf("unexpected defaults: %#v", config)
 	}
+	if config.ManagementListenAddress != "127.0.0.1:8080" || config.AgentListenAddress != "0.0.0.0:8081" || config.AgentAdvertiseURL != "" {
+		t.Fatalf("startup defaults do not preserve loopback management plus automatic Agent callback: %#v", config)
+	}
 }
 
 func TestLoadConfigFileAndEnvironment(t *testing.T) {
@@ -59,6 +62,16 @@ func TestConfigRejectsNonLoopbackManagementListeners(t *testing.T) {
 	}
 }
 
+func TestConfigAllowsAutomaticAgentCallbackDefaults(t *testing.T) {
+	config := DefaultConfig()
+	if err := config.Validate(); err != nil {
+		t.Fatalf("validate automatic callback defaults: %v", err)
+	}
+	if config.AgentAdvertiseURL != "" || config.AgentListenAddress != "0.0.0.0:8081" {
+		t.Fatalf("unexpected automatic callback defaults: %#v", config)
+	}
+}
+
 func TestConfigAllowsExplicitAgentLANListenerAndAdvertiseURL(t *testing.T) {
 	config := DefaultConfig()
 	config.ManagementListenAddress = "[::1]:8080"
@@ -70,7 +83,7 @@ func TestConfigAllowsExplicitAgentLANListenerAndAdvertiseURL(t *testing.T) {
 }
 
 func TestConfigRejectsInvalidAgentAdvertiseURL(t *testing.T) {
-	for _, value := range []string{"", "ssh://host:22", "http://user@host:8081", "http://host:8081?q=1", "http://host:8081/#fragment"} {
+	for _, value := range []string{"ssh://host:22", "http://user@host:8081", "http://host:8081?q=1", "http://host:8081/#fragment"} {
 		t.Run(value, func(t *testing.T) {
 			config := DefaultConfig()
 			config.AgentAdvertiseURL = value

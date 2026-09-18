@@ -116,7 +116,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	bootstrapService, err := bootstrap.NewService(sshFactory, artifactProvider, productService, productService, config.AgentAdvertiseURL)
+	bootstrapService, err := bootstrap.NewServiceWithCallbackResolution(
+		sshFactory,
+		artifactProvider,
+		productService,
+		productService,
+		config.AgentListenAddress,
+		config.AgentAdvertiseURL,
+	)
 	if err != nil {
 		return err
 	}

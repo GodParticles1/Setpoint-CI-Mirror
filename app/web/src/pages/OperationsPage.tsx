@@ -19,6 +19,7 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
   const [selectedID, setSelectedID] = useState('')
   const [nodeID, setNodeID] = useState('')
   const [values, setValues] = useState<FormValues>({})
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const createOperation = useRef(new IdempotentOperation()).current
@@ -26,7 +27,7 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
   const operations = resource.data?.operations ?? []
   const definition = useMemo(() => operations.find((item) => item.metadata.id === selectedID) ?? operations[0], [operations, selectedID])
   useEffect(() => { if (!selectedID && operations[0]) setSelectedID(operations[0].metadata.id) }, [operations, selectedID])
-  useEffect(() => { setValues({}); setSubmitError(''); createOperation.complete() }, [definition?.metadata.id, createOperation])
+  useEffect(() => { setValues({}); setAdvancedOpen(false); setSubmitError(''); createOperation.complete() }, [definition?.metadata.id, createOperation])
 
   if (resource.loading && !resource.data) return <Loading label="正在读取受控操作目录" />
   if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.refresh} />
@@ -81,7 +82,7 @@ export function OperationsPage({ navigate }: { navigate: (path: string) => void 
         <label className="field"><span>执行节点</span><select aria-label="执行节点" value={nodeID} onChange={(event) => setNodeID(event.target.value)}><option value="">请选择在线节点</option>{nodes.map((node) => <option key={node.id} value={node.id} disabled={node.status !== 'online'}>{node.hostname} · {node.os} {node.os_version}{node.status !== 'online' ? ' · 离线' : ''}</option>)}</select></label>
         {isXrocketReaddress && <div className="xrocket-target-heading"><h3>新 Master / Slave / VIP</h3><span>共享参数名保持后端契约原值</span></div>}
         <section className="operation-fields" aria-label="操作参数">{basicParameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}</section>
-        {advancedParameters.length > 0 && <details className="operation-advanced-options"><summary>高级范围选项（可选）</summary><div className="operation-fields operation-advanced-fields">{advancedParameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}</div></details>}
+        {advancedParameters.length > 0 && <details className="operation-advanced-options" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary>高级范围选项（可选）</summary><div className="operation-fields operation-advanced-fields">{advancedParameters.map((parameter) => <ParameterControl key={parameter.name} parameter={parameter} values={values} setValue={(key, value) => setValues((current) => ({ ...current, [key]: value }))} />)}</div></details>}
         {secretRequirements.length > 0 && <section className="secret-boundary"><strong>运行时秘密边界</strong><p>{definition.availability.secret_delivery ? '仅接受不透明引用标识，页面不保存秘密内容。' : '运行时秘密交付尚未开放；页面不接收密码、Token 或私钥。'}</p><ul>{secretRequirements.map((requirement) => <li key={requirement.id}>{requirement.description || requirement.id}{requirement.required ? '（必需）' : '（可选）'}</li>)}</ul></section>}
         {requiredSecretUnavailable && <div className="notice-error">该操作需要运行时秘密，当前无法创建可执行计划。</div>}
         {unsupported && <div className="notice-error">目录包含当前客户端不支持的参数类型，已阻止提交。</div>}

@@ -242,3 +242,116 @@ func TestCrossNodeCancellationFailsClosedWhenPriorRollbackFactsAreIncomplete(t *
 		t.Fatal("reconciliation boundary released containment")
 	}
 }
+
+func TestCrossNodeRollbackReconnectBarrierRequiresLaterSameIdentityObservation(t *testing.T) {
+	service, repo, observer := crossNodeWorkflowFixture(task.OperationActionRollback, task.PhaseSucceeded, 1, operation.StageBarrierAgentReconnect)
+	rollbackAt := repo.run.Status.UpdatedAt.Add(-30 * time.Second)
+	repo.run.Execution.Stages[1].RollbackAt = rollbackAt
+
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.run.Status.State != operation.StateRollingBack || repo.run.Status.Checkpoint != "stage_1_rollback_reconnect_wait" || repo.continuations != 0 {
+		t.Fatalf("rollback barrier run=%#v continuations=%d", repo.run.Status, repo.continuations)
+	}
+	if _, exists := repo.tasks["run-cross:stage:1:verify_rollback"]; exists {
+		t.Fatal("rollback reconnect barrier immediately queued VerifyRollback")
+	}
+	if _, exists := repo.tasks["run-cross:stage:0:rollback"]; exists {
+		t.Fatal("rollback reconnect barrier skipped directly to previous participant")
+	}
+
+	participant := observer.nodes["node-a"]
+	participant.LastSeenAt = rollbackAt.Add(time.Second)
+	observer.nodes["node-a"] = participant
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.continuations != 0 {
+		t.Fatal("wrong participant observation satisfied rollback reconnect barrier")
+	}
+
+	observer.nodes["node-b"] = domain.Node{ID: "node-wrong", LastSeenAt: rollbackAt.Add(2 * time.Second)}
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.continuations != 0 {
+		t.Fatal("wrong Agent identity satisfied rollback reconnect barrier")
+	}
+
+	observer.nodes["node-b"] = domain.Node{ID: "node-b", LastSeenAt: rollbackAt}
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.continuations != 0 {
+		t.Fatal("stale or pre-barrier observation satisfied rollback reconnect barrier")
+	}
+
+	observer.nodes["node-b"] = domain.Node{ID: "node-b", LastSeenAt: rollbackAt.Add(time.Second)}
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	verifyID := "run-cross:stage:1:verify_rollback"
+	verify, exists := repo.tasks[verifyID]
+	if !exists || repo.continuations != 1 || verify.Spec.NodeID != "node-b" || verify.Spec.OperationExecution == nil || verify.Spec.OperationExecution.Action != task.OperationActionVerifyRollback {
+		t.Fatalf("VerifyRollback task=%#v exists=%v continuations=%d", verify, exists, repo.continuations)
+	}
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repo.continuations != 1 {
+		t.Fatalf("later matching observation advanced more than once: %d", repo.continuations)
+	}
+
+	verify.Status.Phase = task.PhaseSucceeded
+	repo.tasks[verifyID] = verify
+	repo.run.Execution.Stages[1].RollbackVerification = &operation.Verification{Passed: true}
+	repo.run.Execution.Stages[1].RollbackVerificationAt = rollbackAt.Add(2 * time.Second)
+	repo.run.Status.Checkpoint = stagedActionResultCheckpoint(*verify.Spec.OperationExecution, task.PhaseSucceeded)
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	previous, exists := repo.tasks["run-cross:stage:0:rollback"]
+	if !exists || repo.continuations != 2 || previous.Spec.NodeID != "node-a" || previous.Spec.OperationExecution == nil || previous.Spec.OperationExecution.StageIndex != 0 || previous.Spec.OperationExecution.RestorePoint.ID != "rp-a" || previous.Spec.OperationExecution.Apply.Checkpoint != "applied-a" {
+		t.Fatalf("previous rollback=%#v exists=%v continuations=%d", previous, exists, repo.continuations)
+	}
+}
+
+func TestCrossNodeRollbackReconnectBarrierResumeAndCancellationStayContained(t *testing.T) {
+	service, repo, observer := crossNodeWorkflowFixture(task.OperationActionRollback, task.PhaseSucceeded, 1, operation.StageBarrierAgentReconnect)
+	rollbackAt := repo.run.Status.UpdatedAt.Add(-30 * time.Second)
+	repo.run.Execution.Stages[1].RollbackAt = rollbackAt
+	if err := service.ContinueOperationRun(context.Background(), repo.run.Metadata.ID); err != nil {
+		t.Fatal(err)
+	}
+	beforeTasks := len(repo.tasks)
+	if err := service.ResumeOperationRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.run.Status.Checkpoint != "stage_1_rollback_reconnect_wait" || repo.continuations != 0 || len(repo.tasks) != beforeTasks {
+		t.Fatalf("resume escaped rollback wait: run=%#v continuations=%d tasks=%d", repo.run.Status, repo.continuations, len(repo.tasks))
+	}
+
+	service.base.runs = repo
+	canceled, err := service.CancelOperationRun(context.Background(), repo.run.Metadata.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.Status.State != operation.StateRollingBack || canceled.Status.Checkpoint != "stage_1_rollback_reconnect_wait" || canceled.Status.Recovery == nil || canceled.Status.Recovery.Code != operationrun.RecoveryCancellationRequested {
+		t.Fatalf("cancel/recovery lost rollback containment: %#v", canceled.Status)
+	}
+	if repo.continuations != 0 || service.lease.(*productWorkflowLease).releases != 0 {
+		t.Fatalf("cancel/recovery advanced or released containment: continuations=%d releases=%d", repo.continuations, service.lease.(*productWorkflowLease).releases)
+	}
+
+	observer.nodes["node-b"] = domain.Node{ID: "node-b", LastSeenAt: rollbackAt.Add(time.Second)}
+	if err := service.ResumeOperationRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := repo.tasks["run-cross:stage:1:verify_rollback"]; !exists || repo.continuations != 1 {
+		t.Fatalf("fresh same-Agent observation did not resume contained VerifyRollback: exists=%v continuations=%d", exists, repo.continuations)
+	}
+	if _, exists := repo.tasks["run-cross:stage:0:rollback"]; exists {
+		t.Fatal("resume skipped VerifyRollback and queued previous participant rollback")
+	}
+}

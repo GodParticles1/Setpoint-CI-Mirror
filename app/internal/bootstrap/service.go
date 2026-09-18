@@ -22,23 +22,53 @@ type Service struct {
 	artifacts      ArtifactProvider
 	enrollment     EnrollmentAuthority
 	verifier       Verifier
-	advertise      string
+	callback       callbackResolver
 	verifyFor      time.Duration
 	heartbeatAfter time.Duration
 	now            func() time.Time
 }
 
 func NewService(transports TransportFactory, artifacts ArtifactProvider, enrollment EnrollmentAuthority, verifier Verifier, advertiseURL string) (*Service, error) {
-	if transports == nil || artifacts == nil || enrollment == nil || verifier == nil {
-		return nil, errors.New("bootstrap transport, artifact provider, enrollment authority and verifier are required")
-	}
-	if err := ValidateAgentAdvertiseURL(advertiseURL); err != nil {
+	resolver, err := newStaticCallbackResolver("", advertiseURL)
+	if err != nil {
 		return nil, err
+	}
+	return newService(transports, artifacts, enrollment, verifier, resolver)
+}
+
+func NewServiceWithCallbackResolution(
+	transports TransportFactory,
+	artifacts ArtifactProvider,
+	enrollment EnrollmentAuthority,
+	verifier Verifier,
+	agentListenAddress,
+	advertiseURL string,
+) (*Service, error) {
+	var resolver callbackResolver
+	var err error
+	if strings.TrimSpace(advertiseURL) == "" {
+		resolver, err = newAutomaticCallbackResolver(agentListenAddress, nil)
+	} else {
+		resolver, err = newStaticCallbackResolver(agentListenAddress, advertiseURL)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return newService(transports, artifacts, enrollment, verifier, resolver)
+}
+
+func newService(transports TransportFactory, artifacts ArtifactProvider, enrollment EnrollmentAuthority, verifier Verifier, callback callbackResolver) (*Service, error) {
+	if transports == nil || artifacts == nil || enrollment == nil || verifier == nil || callback == nil {
+		return nil, errors.New("bootstrap transport, artifact provider, enrollment authority, verifier and callback resolver are required")
 	}
 	return &Service{
 		transports: transports, artifacts: artifacts, enrollment: enrollment, verifier: verifier,
-		advertise: advertiseURL, verifyFor: defaultVerifyTimeout, heartbeatAfter: bootstrapHeartbeatInterval, now: time.Now,
+		callback: callback, verifyFor: defaultVerifyTimeout, heartbeatAfter: bootstrapHeartbeatInterval, now: time.Now,
 	}, nil
+}
+
+func (service *Service) CallbackStatus() CallbackStatus {
+	return service.callback.Status()
 }
 
 func (service *Service) Probe(ctx context.Context, input ProbeInput) (HostProbe, error) {
@@ -101,9 +131,6 @@ func (service *Service) Apply(ctx context.Context, input ApplyInput) (OnlineNode
 		gateway.ExpectedHostKeyFingerprint = input.ExpectedGatewayHostKeyFingerprint
 		input.ProbeInput.Gateway = &gateway
 	}
-	if err := ValidateRemoteAdvertiseURL(service.advertise); err != nil {
-		return OnlineNode{}, err
-	}
 
 	transport, err := service.transports.Connect(ctx, input.ProbeInput, input.ExpectedHostKeyFingerprint)
 	if err != nil {
@@ -127,6 +154,10 @@ func (service *Service) Apply(ctx context.Context, input ApplyInput) (OnlineNode
 	}
 	if probe.AgentPresent {
 		return OnlineNode{}, &Error{Code: ErrorAlreadyPresent, Message: "Setpoint Agent is already present on the target"}
+	}
+	advertiseURL, err := service.callback.Resolve(ctx, input.ProbeInput)
+	if err != nil {
+		return OnlineNode{}, err
 	}
 	profile, err := ResolveInstallProfile(probe.OS, probe.Home, probe.UID)
 	if err != nil {
@@ -154,7 +185,7 @@ func (service *Service) Apply(ctx context.Context, input ApplyInput) (OnlineNode
 	if err := transport.VerifyRemoteSHA256(ctx, stagedAgent, artifact.SHA256); err != nil {
 		return OnlineNode{}, &Error{Code: ErrorArtifactHashMismatch, Message: "uploaded Agent hash does not match approved artifact", Err: err}
 	}
-	if err := transport.ProbeAgentRuntime(ctx, stagedAgent, service.advertise); err != nil {
+	if err := transport.ProbeAgentRuntime(ctx, stagedAgent, advertiseURL); err != nil {
 		return OnlineNode{}, &Error{Code: ErrorAgentRuntimeUnreachable, Message: "target cannot reach the Setpoint Agent listener", Err: err}
 	}
 
@@ -168,7 +199,7 @@ func (service *Service) Apply(ctx context.Context, input ApplyInput) (OnlineNode
 			_ = service.enrollment.RevokeBootstrapEnrollment(context.WithoutCancel(ctx), token.ID)
 		}
 	}()
-	configBytes, err := agentConfig(service.advertise, profile)
+	configBytes, err := agentConfig(advertiseURL, profile)
 	if err != nil {
 		return OnlineNode{}, err
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +16,9 @@ type keepalivedObservation struct {
 	SourceAddress string
 	PeerAddress   string
 	VIPAddress    string
+	Priority      int
+	Nopreempt     bool
+	BusinessPorts []int
 }
 
 func parseKeepalivedConfig(content string) (keepalivedObservation, error) {
@@ -32,10 +37,17 @@ func parseKeepalivedConfig(content string) (keepalivedObservation, error) {
 	if regexp.MustCompile(`(?i)\bvrrp_instance\s+`).MatchString(clean[start[1]:]) {
 		return keepalivedObservation{}, errors.New("multiple vrrp_instance blocks are ambiguous")
 	}
+	priorityText := singleDirective(body, "priority")
+	priority, err := strconv.Atoi(priorityText)
+	if err != nil || priority < 1 || priority > 255 {
+		return keepalivedObservation{}, fmt.Errorf("invalid or missing priority %q", priorityText)
+	}
 	result := keepalivedObservation{
 		State:         strings.ToUpper(singleDirective(body, "state")),
 		Interface:     singleDirective(body, "interface"),
 		SourceAddress: canonicalIPv4(singleDirective(body, "unicast_src_ip")),
+		Priority:      priority,
+		Nopreempt:     regexp.MustCompile(`(?im)^\s*nopreempt\s*$`).MatchString(body),
 	}
 	peerBody, peerErr := namedBlock(body, "unicast_peer")
 	if peerErr != nil {
@@ -59,7 +71,30 @@ func parseKeepalivedConfig(content string) (keepalivedObservation, error) {
 	if result.Interface == "" || result.SourceAddress == "" {
 		return keepalivedObservation{}, errors.New("interface or unicast_src_ip is missing")
 	}
+	result.BusinessPorts = virtualServerPorts(clean, result.VIPAddress)
 	return result, nil
+}
+
+func virtualServerPorts(content, vip string) []int {
+	matcher := regexp.MustCompile(`(?im)^\s*virtual_server\s+([^\s{}]+)\s+([0-9]+)\s*\{`)
+	seen := map[int]struct{}{}
+	var ports []int
+	for _, match := range matcher.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 || canonicalIPv4(match[1]) != vip {
+			continue
+		}
+		port, err := strconv.Atoi(match[2])
+		if err != nil || port < 1 || port > 65535 {
+			continue
+		}
+		if _, duplicate := seen[port]; duplicate {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return ports
 }
 
 func stripKeepalivedComments(content string) string {

@@ -124,7 +124,7 @@ func TestOperationsAPIExposesXRocketAndPersistsNormalizedParameters(t *testing.T
 	if err := json.Unmarshal(catalog.Body.Bytes(), &definition); err != nil {
 		t.Fatal(err)
 	}
-	if definition.Metadata.ID != xrocketreaddress.OperationID || len(definition.Metadata.Parameters) != 5 {
+	if definition.Metadata.ID != xrocketreaddress.OperationID || len(definition.Metadata.Parameters) != 4 {
 		t.Fatalf("definition=%#v", definition)
 	}
 
@@ -133,7 +133,7 @@ func TestOperationsAPIExposesXRocketAndPersistsNormalizedParameters(t *testing.T
 	request.Spec.OperationID = xrocketreaddress.OperationID
 	request.Spec.NodeID = "node-1"
 	request.Spec.Targets = []operation.Target{{Kind: operation.TargetNode, NodeID: "node-1"}}
-	request.Spec.Parameters = json.RawMessage(`{"master_target_address":" 198.51.100.10 ","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":"24","gateway_address":"198.51.100.1"}`)
+	request.Spec.Parameters = json.RawMessage(`{"master_target_address":" 198.51.100.10 ","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}`)
 	body, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestOperationsAPIExposesXRocketAndPersistsNormalizedParameters(t *testing.T
 	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
 		t.Fatal(err)
 	}
-	if run.Spec.OperationID != xrocketreaddress.OperationID || string(run.Spec.Parameters) != `{"gateway_address":"198.51.100.1","master_target_address":"198.51.100.10","prefix_length":24,"slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12"}` {
+	if run.Spec.OperationID != xrocketreaddress.OperationID || string(run.Spec.Parameters) != `{"external_db_target_address":"203.0.113.20","master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12"}` {
 		t.Fatalf("run spec=%#v", run.Spec)
 	}
 }

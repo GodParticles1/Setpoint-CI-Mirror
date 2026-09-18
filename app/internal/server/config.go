@@ -15,8 +15,8 @@ import (
 
 const (
 	defaultManagementListenAddress = "127.0.0.1:8080"
-	defaultAgentListenAddress      = "127.0.0.1:8081"
-	defaultAgentAdvertiseURL       = "http://127.0.0.1:8081"
+	defaultAgentListenAddress      = "0.0.0.0:8081"
+	defaultAgentAdvertiseURL       = ""
 	defaultAgentArtifactsDirectory = "agents"
 	defaultDatabasePath            = "data/setpoint.db"
 	defaultMaxHeaderBytes          = 1 << 20
@@ -119,8 +119,10 @@ func (config Config) Validate() error {
 	if config.ManagementListenAddress == config.AgentListenAddress {
 		return errors.New("management and Agent listen addresses must differ")
 	}
-	if err := bootstrap.ValidateAgentAdvertiseURL(config.AgentAdvertiseURL); err != nil {
-		return fmt.Errorf("validate Agent advertise URL: %w", err)
+	if strings.TrimSpace(config.AgentAdvertiseURL) != "" {
+		if err := bootstrap.ValidateAgentAdvertiseURL(config.AgentAdvertiseURL); err != nil {
+			return fmt.Errorf("validate Agent advertise URL: %w", err)
+		}
 	}
 	if strings.TrimSpace(config.AgentArtifactsDirectory) == "" {
 		return errors.New("Agent artifacts directory is required")

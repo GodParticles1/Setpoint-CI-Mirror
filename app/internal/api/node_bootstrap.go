@@ -28,6 +28,8 @@ func (router *nodeBootstrapRouter) ServeHTTP(writer http.ResponseWriter, request
 	tracked := &statusWriter{ResponseWriter: writer, status: http.StatusOK}
 	handled := true
 	switch {
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/node-bootstrap/callback-status":
+		writeJSON(tracked, http.StatusOK, router.service.CallbackStatus())
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/node-bootstrap/probe":
 		router.probe(tracked, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/node-bootstrap/apply":

@@ -5,39 +5,63 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
 )
 
-const applyMechanismGap = "evidence does not establish a versioned, reversible xRocket readdress Apply mechanism or safe master/slave/VIP mutation order"
+const applyMechanismGap = "evidence-backed xRocket readdress Apply/rollback execution is not yet registered on the Agent"
 
 var errApplyMechanismUnverified = errors.New(applyMechanismGap)
 
+type profileDiscoverer func(context.Context, discoveryState) (runtimeProfile, error)
+
 type Definition struct {
-	probe discoveryProbe
+	probe           discoveryProbe
+	profileDiscover profileDiscoverer
+	mutator         LocalMutationAdapter
+	inspector       LocalInspectionAdapter
 }
 
 func NewDefinition(commandExecutor executor.CommandExecutor) (*Definition, error) {
 	if commandExecutor == nil {
 		return nil, errors.New("xRocket readdress executor is required")
 	}
-	return &Definition{probe: discoveryProbe{executor: commandExecutor}}, nil
+	probe := discoveryProbe{executor: commandExecutor}
+	return &Definition{probe: probe, profileDiscover: probe.discoverRuntimeProfile}, nil
+}
+
+// NewDefinitionWithStageAdapters constructs the bounded Apply/Verify core for
+// direct execution-contract tests and future reviewed Agent-local composition.
+// Production composition deliberately continues to use NewDefinition, which
+// keeps xRocket writes fail-closed until a separately verified mutation adapter
+// is registered by an explicitly authorized checkpoint.
+func NewDefinitionWithStageAdapters(commandExecutor executor.CommandExecutor, mutator LocalMutationAdapter, inspector LocalInspectionAdapter) (*Definition, error) {
+	if mutator == nil || inspector == nil {
+		return nil, errors.New("xRocket stage mutation and inspection adapters are required")
+	}
+	definition, err := NewDefinition(commandExecutor)
+	if err != nil {
+		return nil, err
+	}
+	definition.mutator = mutator
+	definition.inspector = inspector
+	return definition, nil
 }
 
 func Metadata() operation.Metadata {
 	return operation.Metadata{
-		ID: OperationID, Category: "xRocket 站点运维", Name: "xRocket 站点地址变更", Version: "1.1.0",
-		Description:      "自动发现 xRocket 双机地址、VIP、网络和版本证据；真实修改机制未闭合时拒绝执行。",
+		ID: OperationID, Category: "xRocket 站点运维", Name: "xRocket 站点地址变更", Version: "1.2.0",
+		Description:      "自动发现 C68/R4 双机当前地址、VIP、网络、产品与数据库连接证据；用户只提供新 Master、Slave、VIP 和外置数据库目标 IP。",
 		Risk:             operation.RiskCritical,
-		Impact:           "站点地址变更会中断 Agent 连接，并可能影响 VIP、HA、监督进程、产品配置与业务可达性。",
+		Impact:           "站点地址变更会中断 Agent 连接，并影响 VIP、HA、etcd、产品配置、外置数据库连接目标与业务可达性。",
 		SupportedSystems: []string{"linux"},
 		Parameters: []operation.Parameter{
 			{Name: "master_target_address", Type: "string", Description: "Master 节点目标 IPv4 地址", Required: true},
 			{Name: "slave_target_address", Type: "string", Description: "Slave 节点目标 IPv4 地址", Required: true},
 			{Name: "vip_target_address", Type: "string", Description: "站点 VIP 目标 IPv4 地址", Required: true},
-			{Name: "prefix_length", Type: "string", Description: "目标网络前缀长度（1-32）", Required: true},
-			{Name: "gateway_address", Type: "string", Description: "目标默认网关 IPv4 地址", Required: true},
+			{Name: "external_db_target_address", Type: "string", Description: "外置数据库目标 IPv4 地址；现有 xRocket 访问端口、用户、密码、database 与 schema 保持不变", Required: true},
 		},
 	}
 }
@@ -94,37 +118,108 @@ func (definition *Definition) Discover(ctx context.Context, input operation.Disc
 	}, nil
 }
 
-func (definition *Definition) Precheck(_ context.Context, input operation.PrecheckInput) (operation.Precheck, error) {
+func (definition *Definition) Precheck(ctx context.Context, input operation.PrecheckInput) (operation.Precheck, error) {
+	value, err := decodeParameters(input.Runtime.Parameters)
+	if err != nil {
+		return operation.Precheck{}, err
+	}
 	state, err := decodeDiscovery(input.Discovery.Snapshot)
 	if err != nil {
 		return operation.Precheck{}, err
 	}
+	masterNodeID, slaveNodeID, err := nodeParticipants(input.Runtime.Targets, state.NodeID)
+	if err != nil {
+		return operation.Precheck{
+			Passed: false, Summary: "xRocket readdress requires two registered Agent participants before planning", Snapshot: input.Discovery.Snapshot,
+			Findings: []operation.Finding{{Code: "TWO_PARTICIPANTS_REQUIRED", Severity: operation.FindingBlocking, Summary: "Exactly two Agent node participants are required", Detail: err.Error()}},
+		}, nil
+	}
+	if definition.profileDiscover == nil {
+		return operation.Precheck{}, errors.New("xRocket runtime profile discoverer is unavailable")
+	}
+	profile, err := definition.profileDiscover(ctx, state)
+	if err != nil {
+		return operation.Precheck{
+			Passed: false, Summary: "xRocket C68 runtime profile could not be proven", Snapshot: input.Discovery.Snapshot,
+			Findings: []operation.Finding{{Code: "RUNTIME_PROFILE_UNVERIFIED", Severity: operation.FindingBlocking, Summary: "Runtime profile evidence is incomplete", Detail: err.Error(), Target: &operation.Target{Kind: operation.TargetNode, NodeID: masterNodeID}}},
+		}, nil
+	}
+	if err := validateBoundedPrecheck(value, state, profile); err != nil {
+		return operation.Precheck{
+			Passed: false, Summary: "xRocket readdress is outside the bounded C68/R4 execution envelope", Snapshot: input.Discovery.Snapshot,
+			Findings: []operation.Finding{{Code: "BOUNDED_CONTRACT_REJECTED", Severity: operation.FindingBlocking, Summary: "Precheck rejected the discovered topology", Detail: err.Error(), Target: &operation.Target{Kind: operation.TargetNode, NodeID: masterNodeID}}},
+		}, nil
+	}
+	precheck := precheckState{SchemaVersion: precheckSchema, Parameters: value, Discovery: state, MasterProfile: profile, MasterNodeID: masterNodeID, SlaveNodeID: slaveNodeID}
+	artifact, err := encodeArtifact(precheckSchema, precheck)
+	if err != nil {
+		return operation.Precheck{}, err
+	}
 	return operation.Precheck{
-		Passed:   false,
-		Summary:  "xRocket readdress Apply is blocked because the product mutation and recovery mechanism is not evidence-closed",
-		Snapshot: input.Discovery.Snapshot,
-		Findings: []operation.Finding{{
-			Code: "APPLY_MECHANISM_UNVERIFIED", Severity: operation.FindingBlocking,
-			Summary: "No evidence-backed Apply mechanism is available", Detail: applyMechanismGap,
-			Target: &operation.Target{Kind: operation.TargetNode, NodeID: state.NodeID},
-		}},
+		Passed:   true,
+		Summary:  "Current Master, bounded C68/R4 runtime profile, singleton etcd, ifcfg network, nopreempt HA and four target inputs are validated; Slave profile remains a mandatory snapshot-first stage before mutation",
+		Snapshot: artifact,
 	}, nil
 }
 
-func (*Definition) Plan(context.Context, operation.PlanInput) (operation.Plan, error) {
-	return operation.Plan{}, errApplyMechanismUnverified
+func (*Definition) Plan(_ context.Context, input operation.PlanInput) (operation.Plan, error) {
+	state, err := decodePrecheck(input.Precheck.Snapshot)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	if !input.Precheck.Passed {
+		return operation.Plan{}, errors.New("xRocket plan requires a passed precheck")
+	}
+	return buildPlan(state)
 }
 
-func (*Definition) Impact(context.Context, operation.ImpactInput) (operation.Impact, error) {
-	return operation.Impact{}, errApplyMechanismUnverified
+func (*Definition) Impact(_ context.Context, input operation.ImpactInput) (operation.Impact, error) {
+	plan, err := decodeExecutionPlan(input.Plan)
+	if err != nil {
+		return operation.Impact{}, err
+	}
+	return buildImpact(plan), nil
 }
 
-func (*Definition) Apply(context.Context, operation.ApplyInput) (operation.ApplyResult, error) {
-	return operation.ApplyResult{}, errApplyMechanismUnverified
+func (definition *Definition) Apply(ctx context.Context, input operation.ApplyInput) (operation.ApplyResult, error) {
+	if definition.mutator == nil || definition.inspector == nil {
+		return definition.applyStage(ctx, input)
+	}
+	plan, err := decodeExecutionPlan(input.Plan)
+	if err != nil {
+		return operation.ApplyResult{}, err
+	}
+	if !reflect.DeepEqual(input.Impact, buildImpact(plan)) {
+		return operation.ApplyResult{}, errors.New("xRocket Apply impact differs from the frozen execution plan")
+	}
+	result, err := definition.applyStage(ctx, input)
+	if err != nil {
+		return operation.ApplyResult{}, err
+	}
+	if input.Stage != nil && input.Stage.ID == "final-slave" {
+		verification, verifyErr := definition.verifyStage(ctx, operation.VerifyInput{Runtime: input.Runtime, Plan: input.Plan, Stage: input.Stage, Apply: result})
+		if verifyErr != nil {
+			return operation.ApplyResult{}, verifyErr
+		}
+		if !verification.Passed {
+			return operation.ApplyResult{}, errors.New("xRocket final-site postcondition does not match the frozen bounded contract")
+		}
+	}
+	return result, nil
 }
 
-func (*Definition) Verify(context.Context, operation.VerifyInput) (operation.Verification, error) {
-	return operation.Verification{}, errApplyMechanismUnverified
+func (definition *Definition) Verify(ctx context.Context, input operation.VerifyInput) (operation.Verification, error) {
+	if definition.inspector == nil {
+		return definition.verifyStage(ctx, input)
+	}
+	receipt, err := decodeApplyStageReceipt(input.Apply)
+	if err != nil {
+		return operation.Verification{}, err
+	}
+	if input.Apply.Checkpoint != receipt.Checkpoint {
+		return operation.Verification{}, errors.New("xRocket ApplyResult checkpoint differs from the typed stage receipt")
+	}
+	return definition.verifyStage(ctx, input)
 }
 
 func (*Definition) Rollback(context.Context, operation.RollbackInput) (operation.RollbackResult, error) {

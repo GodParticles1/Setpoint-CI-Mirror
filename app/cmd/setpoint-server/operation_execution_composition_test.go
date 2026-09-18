@@ -20,11 +20,11 @@ func TestServerComposesAcceptedProductExecutionCapabilitiesAndRestartResume(t *t
 	if !ok || metadata.Version != xrocketreaddress.Metadata().Version {
 		t.Fatalf("xRocket catalog metadata missing or changed: ok=%v metadata=%#v", ok, metadata)
 	}
-	normalized, err := registry.NormalizeParameters(xrocketreaddress.OperationID, json.RawMessage(`{"master_target_address":" 198.51.100.10 ","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":"24","gateway_address":"198.51.100.1"}`))
+	normalized, err := registry.NormalizeParameters(xrocketreaddress.OperationID, json.RawMessage(`{"master_target_address":" 198.51.100.10 ","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(normalized) != `{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":24,"gateway_address":"198.51.100.1"}` {
+	if string(normalized) != `{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}` {
 		t.Fatalf("normalized parameters=%s", normalized)
 	}
 

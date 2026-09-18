@@ -40,3 +40,11 @@ export interface NodeBootstrapApplyResponse {
   status: 'online'
   site_id?: string
 }
+
+export interface AgentCallbackStatus {
+  mode: 'automatic_route' | 'explicit'
+  state: 'ready' | 'unavailable'
+  agent_listen_address: string
+  effective_advertise_url?: string
+  runtime_probe_required: boolean
+}
