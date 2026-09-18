@@ -181,3 +181,33 @@ test("tool-call budget exhaustion fails closed without mutation", async()=>{ con
 test("explicit session call budget rejects calls beyond configured cap", async()=>{ const session=createReadSession({client:new FakeGitHubClient(),envelope:envelope(),maxCalls:1}); await session.bootstrap(); await session.execute("setpoint_get_live_main",{}); await assert.rejects(()=>session.execute("setpoint_get_live_main",{}),BudgetError); });
 
 test("same delivery replay causes at most one automatic model invocation", async()=>{ const registry=new MemoryRegistry(); const client=new FakeGitHubClient(); const t=transport(()=>finalResponse("ACCEPT","resp_once")); const first=await executeLiveTakeover({envelope:envelope(),registry,transport:t,githubClient:client}); assert.equal(first.state,INVOCATION_STATES.COMPLETED); assert.equal(first.failClosed,true); const second=await executeLiveTakeover({envelope:envelope(),registry,transport:t,githubClient:client}); assert.equal(second.replay,true); assert.equal(t.sends,1); });
+
+
+test("sanitized OpenAI 429 metadata survives live takeover outcome", async()=> {
+  const { session, boot } = await bootstrapPrSession();
+  const t = transport(() => ({
+    ok: false,
+    status: 429,
+    error: {
+      type: "insufficient_quota",
+      code: "credit_balance_exhausted",
+      message: "Credit balance exhausted",
+      requestId: "req_live_429",
+    },
+    requestId: "req_live_429",
+  }));
+  const out = await runBoundedToolLoop({
+    envelope: envelope("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    bootstrap: boot,
+    session,
+    transport: t,
+    model: t.model,
+  });
+  assert.equal(out.state, INVOCATION_STATES.UNCERTAIN_AFTER_DISPATCH);
+  assert.equal(out.errorClass, "OPENAI_HTTP_429");
+  assert.equal(out.openaiHttpStatus, 429);
+  assert.equal(out.openaiErrorType, "insufficient_quota");
+  assert.equal(out.openaiErrorCode, "credit_balance_exhausted");
+  assert.equal(out.openaiErrorMessage, "Credit balance exhausted");
+  assert.equal(out.openaiRequestId, "req_live_429");
+});

@@ -54,6 +54,88 @@ const EXPECTED_REPOSITORY = "GodParticles1/Setpoint";
 const DELIVERY_RE = /^[A-Za-z0-9-]{16,128}$/;
 const TOKEN_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+const OPENAI_ERROR_BODY_MAX_BYTES = 4096;
+const OPENAI_ERROR_TYPE_MAX_BYTES = 128;
+const OPENAI_ERROR_CODE_MAX_BYTES = 128;
+const OPENAI_ERROR_MESSAGE_MAX_BYTES = 256;
+const OPENAI_REQUEST_ID_MAX_BYTES = 192;
+
+function truncateUtf8(value, maxBytes) {
+  const text = String(value || "");
+  const encoder = new TextEncoder();
+  let result = "";
+  let used = 0;
+  for (const char of text) {
+    const size = encoder.encode(char).byteLength;
+    if (used + size > maxBytes) break;
+    result += char;
+    used += size;
+  }
+  return result;
+}
+
+function sanitizeBoundedText(value, maxBytes) {
+  if (typeof value !== "string") return "";
+  const singleLine = value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return truncateUtf8(singleLine, maxBytes);
+}
+
+async function readBoundedErrorBody(response) {
+  const body = response?.body;
+  if (body && typeof body.getReader === "function") {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let result = "";
+    let used = 0;
+    try {
+      while (used < OPENAI_ERROR_BODY_MAX_BYTES) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+        const remaining = OPENAI_ERROR_BODY_MAX_BYTES - used;
+        const bounded = chunk.byteLength > remaining ? chunk.slice(0, remaining) : chunk;
+        result += decoder.decode(bounded, { stream: true });
+        used += bounded.byteLength;
+        if (chunk.byteLength > remaining) {
+          await reader.cancel();
+          break;
+        }
+      }
+      result += decoder.decode();
+      return result;
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+  }
+
+  return "";
+}
+
+async function readOpenAIErrorMetadata(response) {
+  const requestId = sanitizeBoundedText(
+    typeof response?.headers?.get === "function" ? response.headers.get("x-request-id") : "",
+    OPENAI_REQUEST_ID_MAX_BYTES,
+  );
+  let error = {};
+  try {
+    const raw = await readBoundedErrorBody(response);
+    const parsed = JSON.parse(raw);
+    if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) {
+      error = parsed.error;
+    }
+  } catch {}
+
+  return {
+    type: sanitizeBoundedText(error.type, OPENAI_ERROR_TYPE_MAX_BYTES),
+    code: sanitizeBoundedText(error.code, OPENAI_ERROR_CODE_MAX_BYTES),
+    message: sanitizeBoundedText(error.message, OPENAI_ERROR_MESSAGE_MAX_BYTES),
+    requestId,
+  };
+}
+
 export const LEADER_DECISION_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -321,10 +403,12 @@ export function createOpenAITransport({ apiKey, model, fetchFn = fetch }) {
       });
 
       if (!response.ok) {
+        const error = await readOpenAIErrorMetadata(response);
         return {
           ok: false,
           status: response.status,
-          body: null,
+          error,
+          requestId: error.requestId,
         };
       }
 
@@ -428,6 +512,11 @@ export async function executeObserveOnly({ envelope, registry, transport }) {
       queueAction: "ack",
       state: INVOCATION_STATES.UNCERTAIN_AFTER_DISPATCH,
       errorClass,
+      openaiHttpStatus: Number.isInteger(remote?.status) ? remote.status : 0,
+      openaiErrorType: remote?.error?.type || "",
+      openaiErrorCode: remote?.error?.code || "",
+      openaiErrorMessage: remote?.error?.message || "",
+      openaiRequestId: remote?.requestId || remote?.error?.requestId || "",
     };
   }
 

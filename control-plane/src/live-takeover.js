@@ -154,7 +154,22 @@ export async function runBoundedToolLoop({ envelope, bootstrap, session, transpo
   while (rounds < MAX_TOOL_ROUNDS) {
     rounds += 1;
     const remote = await transport.send({ url: RESPONSES_API_URL, body: JSON.stringify(request) });
-    if (!remote?.ok) throw new GitHubReadError(`OPENAI_HTTP_${remote?.status || "UNKNOWN"}`, { fatal: true });
+    if (!remote?.ok) {
+      return {
+        queueAction: "ack",
+        state: INVOCATION_STATES.UNCERTAIN_AFTER_DISPATCH,
+        responseId,
+        errorClass: `OPENAI_HTTP_${remote?.status || "UNKNOWN"}`,
+        usage,
+        rounds,
+        calls,
+        openaiHttpStatus: Number.isInteger(remote?.status) ? remote.status : 0,
+        openaiErrorType: remote?.error?.type || "",
+        openaiErrorCode: remote?.error?.code || "",
+        openaiErrorMessage: remote?.error?.message || "",
+        openaiRequestId: remote?.requestId || remote?.error?.requestId || "",
+      };
+    }
     const response = remote.body;
     responseId = typeof response?.id === "string" ? response.id : responseId;
     usageSum(usage, responseUsage(response));

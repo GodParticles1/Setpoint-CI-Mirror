@@ -151,3 +151,113 @@ test("OPENAI_API_KEY is not placed in prompt or registry", async () => {
   assert.equal((await executeObserveOnly({ envelope: envelope(), registry, transport: t })).state, INVOCATION_STATES.COMPLETED);
   assert.equal(captured.init.headers.authorization, `Bearer ${secret}`); assert.equal(captured.init.body.includes(secret), false); assert.equal(JSON.stringify([...registry.records.values()]).includes(secret), false);
 });
+
+
+test("429 rate-limit error metadata is parsed and sanitized", async () => {
+  const secret = "sk-test-secret-do-not-return-123456789";
+  const requestBodyMarker = "request-body-marker-never-return";
+  const t = createOpenAITransport({
+    apiKey: secret,
+    model: "gpt-5.6",
+    fetchFn: async (_url, init) => {
+      assert.equal(init.headers.authorization, `Bearer ${secret}`);
+      assert.equal(init.body.includes(requestBodyMarker), false);
+      return new Response(JSON.stringify({
+        error: {
+          type: "rate_limit_error",
+          code: "rate_limit_exceeded",
+          message: "Too many requests\nplease retry later",
+          internal: "raw-body-secret-marker",
+        },
+      }), {
+        status: 429,
+        headers: { "x-request-id": "req_rate_123" },
+      });
+    },
+  });
+  const prepared = t.prepare(envelope());
+  const remote = await t.send(prepared);
+  assert.equal(remote.ok, false);
+  assert.equal(remote.status, 429);
+  assert.deepEqual(remote.error, {
+    type: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    message: "Too many requests please retry later",
+    requestId: "req_rate_123",
+  });
+  const serialized = JSON.stringify(remote);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("raw-body-secret-marker"), false);
+  assert.equal(serialized.includes(prepared.body), false);
+});
+
+test("429 billing error metadata is sanitized and x-request-id is captured", async () => {
+  const registry = new MemoryRegistry();
+  const t = createOpenAITransport({
+    apiKey: "sk-test-billing-key-123456789",
+    model: "gpt-5.6",
+    fetchFn: async () => new Response(JSON.stringify({
+      error: {
+        type: "insufficient_quota",
+        code: "credit_balance_exhausted",
+        message: "Credit balance exhausted.\r\nAdd credits to continue.",
+      },
+    }), {
+      status: 429,
+      headers: { "x-request-id": "req_billing_456" },
+    }),
+  });
+  const out = await executeObserveOnly({ envelope: envelope("cccccccc-cccc-cccc-cccc-cccccccccccc"), registry, transport: t });
+  assert.equal(out.state, INVOCATION_STATES.UNCERTAIN_AFTER_DISPATCH);
+  assert.equal(out.errorClass, "OPENAI_HTTP_429");
+  assert.equal(out.openaiHttpStatus, 429);
+  assert.equal(out.openaiErrorType, "insufficient_quota");
+  assert.equal(out.openaiErrorCode, "credit_balance_exhausted");
+  assert.equal(out.openaiErrorMessage, "Credit balance exhausted. Add credits to continue.");
+  assert.equal(out.openaiRequestId, "req_billing_456");
+});
+
+test("malformed non-JSON OpenAI error body fails closed without raw-body leakage", async () => {
+  const raw = "<html>proxy raw body secret-marker</html>";
+  const t = createOpenAITransport({
+    apiKey: "sk-test-malformed-key-123456789",
+    model: "gpt-5.6",
+    fetchFn: async () => new Response(raw, {
+      status: 429,
+      headers: { "x-request-id": "req_malformed_789" },
+    }),
+  });
+  const remote = await t.send(t.prepare(envelope("dddddddd-dddd-dddd-dddd-dddddddddddd")));
+  assert.equal(remote.ok, false);
+  assert.deepEqual(remote.error, {
+    type: "",
+    code: "",
+    message: "",
+    requestId: "req_malformed_789",
+  });
+  assert.equal(JSON.stringify(remote).includes(raw), false);
+});
+
+test("OpenAI error metadata is bounded by UTF-8 bytes", async () => {
+  const t = createOpenAITransport({
+    apiKey: "sk-test-bounds-key-123456789",
+    model: "gpt-5.6",
+    fetchFn: async () => new Response(JSON.stringify({
+      error: {
+        type: "T".repeat(300),
+        code: "C".repeat(300),
+        message: "你".repeat(300),
+      },
+    }), {
+      status: 429,
+      headers: { "x-request-id": "R".repeat(300) },
+    }),
+  });
+  const remote = await t.send(t.prepare(envelope("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")));
+  assert.ok(Buffer.byteLength(remote.error.type, "utf8") <= 128);
+  assert.ok(Buffer.byteLength(remote.error.code, "utf8") <= 128);
+  assert.ok(Buffer.byteLength(remote.error.message, "utf8") <= 256);
+  assert.ok(Buffer.byteLength(remote.error.requestId, "utf8") <= 192);
+  assert.equal(remote.error.message.includes("\n"), false);
+  assert.equal(remote.error.message.includes("\r"), false);
+});
