@@ -8,6 +8,6 @@
     "app"
   ],
   "projection_manifest_sha256": "d9718a1588648cda77d22e9e3f140f98036c989b31bfb5826bcc52e8dc2d986f",
-  "source_projection_git_tree_sha256": "053647d724a5f41339859e77395823a612a088191a41e115065e482ed0720109",
+  "source_projection_git_tree_sha256": "56d072ea653d3cb9114f200ee94840d6e838d15b712af6095945e5a315e9b0d7",
   "public_ci_workflow_sha256": "ee56df85421830d23b06c46dc6bb9b725fa08e307fcddbf5e5fd5bc2a132d104"
 }
