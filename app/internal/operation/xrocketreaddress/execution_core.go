@@ -35,29 +35,32 @@ type AliasStageContract struct {
 }
 
 type ProductStageContract struct {
-	NodeID         string `json:"node_id"`
-	Role           string `json:"role"`
-	InstallProfile string `json:"install_profile"`
-	ProductUser    string `json:"product_user"`
-	ProductHome    string `json:"product_home"`
-	ProductPrefix  string `json:"product_prefix"`
-	XrocketBinary  string `json:"xrocket_binary"`
-	OldMaster      string `json:"old_master"`
-	OldSlave       string `json:"old_slave"`
-	OldVIP         string `json:"old_vip"`
-	NewMaster      string `json:"new_master"`
-	NewSlave       string `json:"new_slave"`
-	NewVIP         string `json:"new_vip"`
+	NodeID           string              `json:"node_id"`
+	Role             string              `json:"role"`
+	InstallProfile   string              `json:"install_profile"`
+	ProductUser      string              `json:"product_user"`
+	ProductHome      string              `json:"product_home"`
+	ProductPrefix    string              `json:"product_prefix"`
+	XrocketBinary    string              `json:"xrocket_binary"`
+	OldMaster        string              `json:"old_master"`
+	OldSlave         string              `json:"old_slave"`
+	OldVIP           string              `json:"old_vip"`
+	NewMaster        string              `json:"new_master"`
+	NewSlave         string              `json:"new_slave"`
+	NewVIP           string              `json:"new_vip"`
+	ProductBundle    RecoveryArtifactRef `json:"product_bundle,omitempty"`
+	KeepalivedConfig RecoveryArtifactRef `json:"keepalived_config,omitempty"`
 }
 
 type ExternalDBStageContract struct {
-	NodeID                   string `json:"node_id"`
-	Role                     string `json:"role"`
-	CommonYAMLPath           string `json:"common_yaml_path"`
-	OldAddress               string `json:"old_address"`
-	NewAddress               string `json:"new_address"`
-	Port                     int    `json:"port"`
-	PreserveNonAddressFields bool   `json:"preserve_non_address_fields"`
+	NodeID                   string              `json:"node_id"`
+	Role                     string              `json:"role"`
+	CommonYAMLPath           string              `json:"common_yaml_path"`
+	OldAddress               string              `json:"old_address"`
+	NewAddress               string              `json:"new_address"`
+	Port                     int                 `json:"port"`
+	PreserveNonAddressFields bool                `json:"preserve_non_address_fields"`
+	BaselineConfig           RecoveryArtifactRef `json:"baseline_config,omitempty"`
 }
 
 type EtcdStageContract struct {
@@ -79,18 +82,23 @@ type EtcdStageContract struct {
 }
 
 type ConfdStageContract struct {
-	NodeID             string   `json:"node_id"`
-	Role               string   `json:"role"`
-	InstallProfile     string   `json:"install_profile"`
-	ProductUser        string   `json:"product_user"`
-	ProductHome        string   `json:"product_home"`
-	ProductPrefix      string   `json:"product_prefix"`
-	XrocketBinary      string   `json:"xrocket_binary"`
-	Destinations       []string `json:"destinations"`
-	ExpectedMaster     string   `json:"expected_master"`
-	ExpectedSlave      string   `json:"expected_slave"`
-	ExpectedVIP        string   `json:"expected_vip"`
-	ExpectedExternalDB string   `json:"expected_external_db"`
+	NodeID             string                `json:"node_id"`
+	Role               string                `json:"role"`
+	InstallProfile     string                `json:"install_profile"`
+	ProductUser        string                `json:"product_user"`
+	ProductHome        string                `json:"product_home"`
+	ProductPrefix      string                `json:"product_prefix"`
+	XrocketBinary      string                `json:"xrocket_binary"`
+	Destinations       []string              `json:"destinations"`
+	DestinationFiles   []RecoveryArtifactRef `json:"destination_files,omitempty"`
+	OldMaster          string                `json:"old_master"`
+	OldSlave           string                `json:"old_slave"`
+	OldVIP             string                `json:"old_vip"`
+	OldExternalDB      string                `json:"old_external_db"`
+	ExpectedMaster     string                `json:"expected_master"`
+	ExpectedSlave      string                `json:"expected_slave"`
+	ExpectedVIP        string                `json:"expected_vip"`
+	ExpectedExternalDB string                `json:"expected_external_db"`
 }
 
 type OSStageContract struct {
@@ -493,7 +501,7 @@ func buildStageExpectation(plan executionPlan, manifest restorePointManifest, sp
 	case stageKindConfd:
 		destinations := append([]string(nil), before.Rendering.ConfdDestinations...)
 		sort.Strings(destinations)
-		expectation.Confd = &ConfdStageContract{NodeID: manifest.NodeID, Role: spec.Role, InstallProfile: before.Product.InstallProfile, ProductUser: before.Product.ProductUser, ProductHome: before.Product.ProductHome, ProductPrefix: before.Product.ProductPrefix, XrocketBinary: before.Product.XrocketBinary, Destinations: destinations, ExpectedMaster: plan.Parameters.MasterTargetAddress, ExpectedSlave: plan.Parameters.SlaveTargetAddress, ExpectedVIP: plan.Parameters.VIPTargetAddress, ExpectedExternalDB: plan.Parameters.ExternalDBTargetAddress}
+		expectation.Confd = &ConfdStageContract{NodeID: manifest.NodeID, Role: spec.Role, InstallProfile: before.Product.InstallProfile, ProductUser: before.Product.ProductUser, ProductHome: before.Product.ProductHome, ProductPrefix: before.Product.ProductPrefix, XrocketBinary: before.Product.XrocketBinary, Destinations: destinations, OldMaster: before.Site.MasterAddress, OldSlave: before.Site.SlaveAddress, OldVIP: before.Site.VIPAddress, OldExternalDB: before.Database.Address, ExpectedMaster: plan.Parameters.MasterTargetAddress, ExpectedSlave: plan.Parameters.SlaveTargetAddress, ExpectedVIP: plan.Parameters.VIPTargetAddress, ExpectedExternalDB: plan.Parameters.ExternalDBTargetAddress}
 	case stageKindOS:
 		addresses := append([]restoreInterfaceAddress(nil), before.Network.InterfaceAddresses...)
 		expectation.OS = &OSStageContract{NodeID: manifest.NodeID, Role: spec.Role, Interface: before.Network.Interface, ConfigPath: before.Network.ConfigPath, OldAddress: before.Network.PersistentAddress, NewAddress: localNew, PrefixLength: before.Network.PersistentPrefix, Gateway: before.Network.PersistentGateway, InterfaceAddresses: addresses, BootIDBefore: before.Rendering.BootID, Barrier: spec.Barrier, Reboot: true}
@@ -504,10 +512,108 @@ func buildStageExpectation(plan executionPlan, manifest restorePointManifest, sp
 	default:
 		return stageExpectation{}, fmt.Errorf("unsupported xRocket stage kind %q", spec.Kind)
 	}
+	if manifest.SchemaVersion == RestorePointRollbackSchema {
+		if err := bindStageRecoveryBaselines(&expectation, manifest); err != nil {
+			return stageExpectation{}, err
+		}
+	}
 	if err := validateStageExpectation(expectation); err != nil {
 		return stageExpectation{}, err
 	}
 	return expectation, nil
+}
+
+func bindStageRecoveryBaselines(expectation *stageExpectation, manifest restorePointManifest) error {
+	if manifest.Recovery == nil {
+		return errors.New("xRocket v2 stage expectation requires recovery artifacts")
+	}
+	recovery := *manifest.Recovery
+	before := manifest.Before
+	artifact := func(kind, source string) (RecoveryArtifactRef, error) {
+		return recoveryArtifactByKindSource(recovery, kind, source)
+	}
+	switch expectation.Kind {
+	case stageKindProduct:
+		bundle, err := artifact(recoveryKindProductBundle, before.Product.VersionEvidence)
+		if err != nil {
+			return err
+		}
+		keepalived, err := artifact(recoveryKindKeepalivedConfig, before.HA.ConfigPath)
+		if err != nil {
+			return err
+		}
+		expectation.Product.ProductBundle = bundle
+		expectation.Product.KeepalivedConfig = keepalived
+	case stageKindExternalDB:
+		baseline, err := artifact(recoveryKindCommonYAML, before.Product.CommonYAMLPath)
+		if err != nil {
+			return err
+		}
+		expectation.ExternalDB.BaselineConfig = baseline
+	case stageKindConfd:
+		files := make([]RecoveryArtifactRef, 0, len(expectation.Confd.Destinations))
+		for _, destination := range expectation.Confd.Destinations {
+			baseline, err := artifact(recoveryKindConfdDestination, destination)
+			if err != nil {
+				return err
+			}
+			files = append(files, baseline)
+		}
+		expectation.Confd.DestinationFiles = files
+	}
+	return nil
+}
+
+func hasRecoveryArtifactRef(ref RecoveryArtifactRef) bool {
+	return ref.ID != "" || ref.OwnerID != "" || ref.Kind != "" || ref.SourcePath != "" || ref.BackupRef != "" || ref.SHA256 != ""
+}
+
+func validateOptionalStageRecoveryRef(ref RecoveryArtifactRef, kind, source string) error {
+	if !hasRecoveryArtifactRef(ref) {
+		return nil
+	}
+	if ref.Kind != kind || ref.SourcePath != source {
+		return errors.New("xRocket stage recovery baseline kind/source correlation is invalid")
+	}
+	return validateRecoveryArtifact(ref, RecoveryArtifactOwner{OwnerID: ref.OwnerID})
+}
+
+func stageExpectationRecoveryRefs(expectation stageExpectation) []RecoveryArtifactRef {
+	switch expectation.Kind {
+	case stageKindProduct:
+		if expectation.Product != nil {
+			return []RecoveryArtifactRef{expectation.Product.ProductBundle, expectation.Product.KeepalivedConfig}
+		}
+	case stageKindExternalDB:
+		if expectation.ExternalDB != nil {
+			return []RecoveryArtifactRef{expectation.ExternalDB.BaselineConfig}
+		}
+	case stageKindConfd:
+		if expectation.Confd != nil {
+			return append([]RecoveryArtifactRef(nil), expectation.Confd.DestinationFiles...)
+		}
+	}
+	return nil
+}
+
+func validateApplyReceiptRecoveryOwner(receipt applyStageReceipt) error {
+	ownerID := recoveryOwnerID(restorePointManifest{
+		RunID:              receipt.RunID,
+		StageID:            receipt.StageID,
+		StageIndex:         receipt.StageIndex,
+		NodeID:             receipt.NodeID,
+		ParticipantNodeIDs: append([]string(nil), receipt.ParticipantNodeIDs...),
+		Role:               receipt.Role,
+	})
+	for _, ref := range stageExpectationRecoveryRefs(receipt.Expectation) {
+		if !hasRecoveryArtifactRef(ref) {
+			continue
+		}
+		if ref.OwnerID != ownerID {
+			return errors.New("xRocket ApplyResult recovery baseline owner differs from the run/stage identity")
+		}
+	}
+	return nil
 }
 
 func validateStageExpectation(expectation stageExpectation) error {
@@ -535,21 +641,49 @@ func validateStageExpectation(expectation stageExpectation) error {
 		if expectation.Product == nil || expectation.Product.NodeID == "" || !boundedAbsolutePath(expectation.Product.XrocketBinary) || expectation.Product.OldMaster == "" || expectation.Product.OldSlave == "" || expectation.Product.OldVIP == "" || expectation.Product.NewMaster == "" || expectation.Product.NewSlave == "" || expectation.Product.NewVIP == "" {
 			return errors.New("xRocket product stage contract is incomplete")
 		}
+		productBundleBound := hasRecoveryArtifactRef(expectation.Product.ProductBundle)
+		keepalivedBound := hasRecoveryArtifactRef(expectation.Product.KeepalivedConfig)
+		if productBundleBound != keepalivedBound {
+			return errors.New("xRocket product stage recovery baselines must be bound together")
+		}
+		if productBundleBound {
+			if err := validateOptionalStageRecoveryRef(expectation.Product.ProductBundle, recoveryKindProductBundle, expectation.Product.ProductBundle.SourcePath); err != nil {
+				return err
+			}
+			if err := validateOptionalStageRecoveryRef(expectation.Product.KeepalivedConfig, recoveryKindKeepalivedConfig, expectation.Product.KeepalivedConfig.SourcePath); err != nil {
+				return err
+			}
+		}
 	case stageKindExternalDB:
 		if expectation.ExternalDB == nil || expectation.ExternalDB.NodeID == "" || !boundedAbsolutePath(expectation.ExternalDB.CommonYAMLPath) || expectation.ExternalDB.OldAddress == "" || expectation.ExternalDB.NewAddress == "" || expectation.ExternalDB.Port <= 0 || !expectation.ExternalDB.PreserveNonAddressFields {
 			return errors.New("xRocket external DB stage contract is incomplete")
+		}
+		if hasRecoveryArtifactRef(expectation.ExternalDB.BaselineConfig) {
+			if err := validateOptionalStageRecoveryRef(expectation.ExternalDB.BaselineConfig, recoveryKindCommonYAML, expectation.ExternalDB.CommonYAMLPath); err != nil {
+				return err
+			}
 		}
 	case stageKindEtcd:
 		if expectation.Etcd == nil || expectation.Etcd.NodeID == "" || !boundedAbsolutePath(expectation.Etcd.ConfigPath) || !boundedAbsolutePath(expectation.Etcd.EtcdctlPath) || expectation.Etcd.Scheme == "" || expectation.Etcd.MemberID == "" || expectation.Etcd.MemberCount != 1 || expectation.Etcd.OldClient == "" || expectation.Etcd.NewClient == "" || expectation.Etcd.ClientPort <= 0 || expectation.Etcd.OldPeer == "" || expectation.Etcd.NewPeer == "" || expectation.Etcd.PeerPort <= 0 || expectation.Etcd.ServiceName == "" || expectation.Etcd.ControlAdapter == "" {
 			return errors.New("xRocket etcd stage contract is incomplete or not singleton")
 		}
 	case stageKindConfd:
-		if expectation.Confd == nil || expectation.Confd.NodeID == "" || !boundedAbsolutePath(expectation.Confd.XrocketBinary) || len(expectation.Confd.Destinations) == 0 || expectation.Confd.ExpectedMaster == "" || expectation.Confd.ExpectedSlave == "" || expectation.Confd.ExpectedVIP == "" || expectation.Confd.ExpectedExternalDB == "" {
+		if expectation.Confd == nil || expectation.Confd.NodeID == "" || !boundedAbsolutePath(expectation.Confd.XrocketBinary) || len(expectation.Confd.Destinations) == 0 || expectation.Confd.OldMaster == "" || expectation.Confd.OldSlave == "" || expectation.Confd.OldVIP == "" || expectation.Confd.OldExternalDB == "" || expectation.Confd.ExpectedMaster == "" || expectation.Confd.ExpectedSlave == "" || expectation.Confd.ExpectedVIP == "" || expectation.Confd.ExpectedExternalDB == "" {
 			return errors.New("xRocket confd stage contract is incomplete")
 		}
 		for _, destination := range expectation.Confd.Destinations {
 			if !boundedAbsolutePath(destination) {
 				return errors.New("xRocket confd stage contract has an unbounded destination")
+			}
+		}
+		if len(expectation.Confd.DestinationFiles) > 0 {
+			if len(expectation.Confd.DestinationFiles) != len(expectation.Confd.Destinations) {
+				return errors.New("xRocket confd stage recovery baseline cardinality is invalid")
+			}
+			for index, destination := range expectation.Confd.Destinations {
+				if err := validateOptionalStageRecoveryRef(expectation.Confd.DestinationFiles[index], recoveryKindConfdDestination, destination); err != nil {
+					return err
+				}
 			}
 		}
 	case stageKindOS:
@@ -682,6 +816,9 @@ func decodeApplyStageReceipt(result operation.ApplyResult) (applyStageReceipt, e
 	if err := validateStageExpectation(receipt.Expectation); err != nil {
 		return applyStageReceipt{}, err
 	}
+	if err := validateApplyReceiptRecoveryOwner(receipt); err != nil {
+		return applyStageReceipt{}, err
+	}
 	return receipt, nil
 }
 
@@ -725,13 +862,34 @@ func stageExpectationMatchesPlan(expectation stageExpectation, plan executionPla
 	case stageKindAlias:
 		return expectation.Alias != nil && expectation.Alias.NodeID == nodeID && expectation.Alias.Role == spec.Role && expectation.Alias.OldAddress == localOld && expectation.Alias.NewAddress == localNew && expectation.Alias.Interface == plan.Discovery.Interface && expectation.Alias.PrefixLength == plan.Discovery.PrefixLength && expectation.Alias.Gateway == plan.Discovery.GatewayAddress
 	case stageKindProduct:
-		return expectation.Product != nil && expectation.Product.NodeID == nodeID && expectation.Product.Role == spec.Role && expectation.Product.OldMaster == plan.Discovery.MasterAddress && expectation.Product.OldSlave == plan.Discovery.SlaveAddress && expectation.Product.OldVIP == plan.Discovery.VIPAddress && expectation.Product.NewMaster == plan.Parameters.MasterTargetAddress && expectation.Product.NewSlave == plan.Parameters.SlaveTargetAddress && expectation.Product.NewVIP == plan.Parameters.VIPTargetAddress
+		if expectation.Product == nil || expectation.Product.NodeID != nodeID || expectation.Product.Role != spec.Role || expectation.Product.OldMaster != plan.Discovery.MasterAddress || expectation.Product.OldSlave != plan.Discovery.SlaveAddress || expectation.Product.OldVIP != plan.Discovery.VIPAddress || expectation.Product.NewMaster != plan.Parameters.MasterTargetAddress || expectation.Product.NewSlave != plan.Parameters.SlaveTargetAddress || expectation.Product.NewVIP != plan.Parameters.VIPTargetAddress {
+			return false
+		}
+		if hasRecoveryArtifactRef(expectation.Product.ProductBundle) {
+			if expectation.Product.ProductBundle.SourcePath != plan.Discovery.ProductVersionEvidence || expectation.Product.KeepalivedConfig.SourcePath != plan.Discovery.KeepalivedConfigPath {
+				return false
+			}
+		}
+		return true
 	case stageKindExternalDB:
-		return expectation.ExternalDB != nil && expectation.ExternalDB.NodeID == nodeID && expectation.ExternalDB.Role == spec.Role && expectation.ExternalDB.OldAddress == plan.MasterProfile.ExternalDBAddress && expectation.ExternalDB.NewAddress == plan.Parameters.ExternalDBTargetAddress && expectation.ExternalDB.Port == plan.MasterProfile.ExternalDBPort && expectation.ExternalDB.PreserveNonAddressFields
+		return expectation.ExternalDB != nil && expectation.ExternalDB.NodeID == nodeID && expectation.ExternalDB.Role == spec.Role && expectation.ExternalDB.OldAddress == plan.MasterProfile.ExternalDBAddress && expectation.ExternalDB.NewAddress == plan.Parameters.ExternalDBTargetAddress && expectation.ExternalDB.Port == plan.MasterProfile.ExternalDBPort && expectation.ExternalDB.PreserveNonAddressFields && (!hasRecoveryArtifactRef(expectation.ExternalDB.BaselineConfig) || expectation.ExternalDB.BaselineConfig.SourcePath == plan.MasterProfile.CommonYAMLPath)
 	case stageKindEtcd:
 		return expectation.Etcd != nil && expectation.Etcd.NodeID == nodeID && expectation.Etcd.Role == spec.Role && expectation.Etcd.OldClient == localOld && expectation.Etcd.OldPeer == localOld && expectation.Etcd.NewClient == localNew && expectation.Etcd.NewPeer == localNew && expectation.Etcd.MemberID != "" && expectation.Etcd.MemberCount == 1
 	case stageKindConfd:
-		return expectation.Confd != nil && expectation.Confd.NodeID == nodeID && expectation.Confd.Role == spec.Role && expectation.Confd.ExpectedMaster == plan.Parameters.MasterTargetAddress && expectation.Confd.ExpectedSlave == plan.Parameters.SlaveTargetAddress && expectation.Confd.ExpectedVIP == plan.Parameters.VIPTargetAddress && expectation.Confd.ExpectedExternalDB == plan.Parameters.ExternalDBTargetAddress
+		if expectation.Confd == nil || expectation.Confd.NodeID != nodeID || expectation.Confd.Role != spec.Role || expectation.Confd.OldMaster != plan.Discovery.MasterAddress || expectation.Confd.OldSlave != plan.Discovery.SlaveAddress || expectation.Confd.OldVIP != plan.Discovery.VIPAddress || expectation.Confd.OldExternalDB != plan.MasterProfile.ExternalDBAddress || expectation.Confd.ExpectedMaster != plan.Parameters.MasterTargetAddress || expectation.Confd.ExpectedSlave != plan.Parameters.SlaveTargetAddress || expectation.Confd.ExpectedVIP != plan.Parameters.VIPTargetAddress || expectation.Confd.ExpectedExternalDB != plan.Parameters.ExternalDBTargetAddress {
+			return false
+		}
+		if len(expectation.Confd.DestinationFiles) > 0 {
+			if len(expectation.Confd.DestinationFiles) != len(expectation.Confd.Destinations) {
+				return false
+			}
+			for index, destination := range expectation.Confd.Destinations {
+				if expectation.Confd.DestinationFiles[index].SourcePath != destination {
+					return false
+				}
+			}
+		}
+		return true
 	case stageKindOS:
 		return expectation.OS != nil && expectation.OS.NodeID == nodeID && expectation.OS.Role == spec.Role && expectation.OS.OldAddress == localOld && expectation.OS.NewAddress == localNew && expectation.OS.Interface == plan.Discovery.Interface && expectation.OS.PrefixLength == plan.Discovery.PrefixLength && expectation.OS.Gateway == plan.Discovery.GatewayAddress && expectation.OS.Barrier == operation.StageBarrierAgentReconnect && expectation.OS.Reboot
 	case stageKindFinal:
