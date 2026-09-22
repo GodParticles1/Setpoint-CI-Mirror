@@ -335,27 +335,71 @@ func TestOperationExecutionVerificationResultShapeRejectsInvalidEvidence(t *test
 	}
 }
 
-func TestOperationExecutionFailedMutationOutputsAreRejected(t *testing.T) {
-	for _, action := range []task.OperationAction{
-		task.OperationActionCreateRestorePoint,
-		task.OperationActionRollback,
-	} {
-		t.Run(string(action), func(t *testing.T) {
-			fixture := prepareOperationExecutionFixture(t, action)
-			defer fixture.store.Close()
-			beforeRun, err := fixture.store.GetOperationRun(fixture.ctx, fixture.runID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			beforeJournal := countRows(t, fixture.store, `SELECT COUNT(*) FROM operation_journal WHERE run_id = ?`, fixture.runID)
-			fixture.submission.Phase = task.PhaseFailed
-			fixture.submission.OperationExecutionResult.Error = &task.Failure{Code: "mutation_failed", Message: "mutation failed"}
+func TestOperationExecutionFailedRestorePointOutputIsRejected(t *testing.T) {
+	fixture := prepareOperationExecutionFixture(t, task.OperationActionCreateRestorePoint)
+	defer fixture.store.Close()
+	beforeRun, err := fixture.store.GetOperationRun(fixture.ctx, fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJournal := countRows(t, fixture.store, `SELECT COUNT(*) FROM operation_journal WHERE run_id = ?`, fixture.runID)
+	fixture.submission.Phase = task.PhaseFailed
+	fixture.submission.OperationExecutionResult.Error = &task.Failure{Code: "mutation_failed", Message: "mutation failed"}
 
-			if _, err := fixture.store.CompleteTask(fixture.ctx, fixture.nodeID, fixture.taskID, fixture.submission, fixture.reportedAt); err == nil {
-				t.Fatal("failed mutation output must be rejected")
-			}
-			assertOperationExecutionResultRejectedWithoutDurableWrite(t, fixture, beforeRun, beforeJournal)
-		})
+	if _, err := fixture.store.CompleteTask(fixture.ctx, fixture.nodeID, fixture.taskID, fixture.submission, fixture.reportedAt); err == nil {
+		t.Fatal("failed restore-point output must be rejected")
+	}
+	assertOperationExecutionResultRejectedWithoutDurableWrite(t, fixture, beforeRun, beforeJournal)
+}
+
+func TestOperationExecutionFailedApplyEvidenceIsPersisted(t *testing.T) {
+	fixture := prepareOperationExecutionFixture(t, task.OperationActionApply)
+	defer fixture.store.Close()
+	fixture.submission.Phase = task.PhaseFailed
+	fixture.submission.OperationExecutionResult.Error = &task.Failure{Code: "apply_failed", Message: "apply may have partially mutated"}
+	fixture.submission.OperationExecutionResult.Apply = &operation.ApplyResult{
+		Changed: true, MutationState: operation.MutationMayHaveChanged,
+		Checkpoint: "apply_partial",
+		State: operation.Artifact{SchemaVersion: "test.apply.v1", Payload: json.RawMessage(`{"mutation_state":"MAY_HAVE_CHANGED"}`)},
+	}
+	if _, err := fixture.store.CompleteTask(fixture.ctx, fixture.nodeID, fixture.taskID, fixture.submission, fixture.reportedAt); err != nil {
+		t.Fatal(err)
+	}
+	run, err := fixture.store.GetOperationRun(fixture.ctx, fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Execution == nil || run.Execution.Apply == nil || run.Execution.Apply.MutationState != operation.MutationMayHaveChanged || run.Execution.Apply.Checkpoint != "apply_partial" {
+		t.Fatalf("failed Apply evidence was not durably merged: %#v", run.Execution)
+	}
+	if run.Status.Checkpoint != "action_apply_failed" {
+		t.Fatalf("checkpoint=%q", run.Status.Checkpoint)
+	}
+}
+
+func TestOperationExecutionFailedRollbackEvidenceIsPersisted(t *testing.T) {
+	fixture := prepareOperationExecutionFixture(t, task.OperationActionRollback)
+	defer fixture.store.Close()
+	fixture.submission.Phase = task.PhaseFailed
+	fixture.submission.OperationExecutionResult.Error = &task.Failure{Code: "rollback_failed", Message: "rollback may have partially mutated"}
+	fixture.submission.OperationExecutionResult.Rollback = &operation.RollbackResult{
+		Restored: false,
+		MutationState: operation.MutationMayHaveChanged,
+		Checkpoint: "rollback_partial",
+		State: operation.Artifact{SchemaVersion: "test.rollback.v1", Payload: json.RawMessage(`{"mutation_state":"MAY_HAVE_CHANGED"}`)},
+	}
+	if _, err := fixture.store.CompleteTask(fixture.ctx, fixture.nodeID, fixture.taskID, fixture.submission, fixture.reportedAt); err != nil {
+		t.Fatal(err)
+	}
+	run, err := fixture.store.GetOperationRun(fixture.ctx, fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Execution == nil || run.Execution.Rollback == nil || run.Execution.Rollback.Restored || run.Execution.Rollback.Checkpoint != "rollback_partial" {
+		t.Fatalf("failed rollback evidence was not durably merged: %#v", run.Execution)
+	}
+	if run.Status.Checkpoint != "action_rollback_failed" {
+		t.Fatalf("checkpoint=%q", run.Status.Checkpoint)
 	}
 }
 

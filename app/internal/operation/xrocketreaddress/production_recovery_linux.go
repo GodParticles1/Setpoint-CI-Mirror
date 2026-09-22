@@ -545,7 +545,7 @@ func (collector *productionRecoveryCollector) validateEtcdIdentity(ctx context.C
 	}
 	endpoint := etcdEndpoint(state.Scheme, state.ClientAddress, state.ClientPort)
 	health, err := collector.executor.Execute(ctx, executor.Command{Name: "env", Args: []string{"ETCDCTL_API=3", state.EtcdctlPath, "--endpoints=" + endpoint, "endpoint", "health"}})
-	if err != nil || health.StdoutTruncated || health.StderrTruncated || !strings.Contains(strings.ToLower(health.Stdout), "healthy") {
+	if err != nil || health.StdoutTruncated || health.StderrTruncated || !strictEtcdHealthOutput(health.Stdout) {
 		return errors.New("xRocket etcd health does not match the frozen recovery precondition")
 	}
 	members, err := collector.executor.Execute(ctx, executor.Command{Name: "env", Args: []string{"ETCDCTL_API=3", state.EtcdctlPath, "--endpoints=" + endpoint, "member", "list", "-w", "json"}, OutputLimit: maxLogicalKVOutputBytes})
@@ -669,6 +669,14 @@ func deterministicKVDigest(payload []byte) (string, error) {
 
 func etcdEndpoint(scheme, address string, portValue int) string {
 	return fmt.Sprintf("%s://%s:%d", scheme, address, portValue)
+}
+
+func strictEtcdHealthOutput(stdout string) bool {
+	value := strings.ToLower(strings.TrimSpace(stdout))
+	if value == "" || strings.Contains(value, "unhealthy") || strings.Contains(value, "error") || strings.Contains(value, "failed") {
+		return false
+	}
+	return regexp.MustCompile(`(?m)(^|[[:space:]])is[[:space:]]+healthy([[:space:]]|:|$)`).MatchString(value)
 }
 
 func (inspector *productionReadOnlyInspector) AliasSatisfied(ctx context.Context, contract AliasStageContract) (bool, error) {
@@ -1078,10 +1086,21 @@ func validateRecoveryRefPath(artifact RecoveryArtifactRef) error {
 }
 
 func (inspector *productionReadOnlyInspector) EtcdRecoveryState(ctx context.Context, contract RollbackEtcdContract) (EtcdRecoveryObservation, error) {
+	data, err := readObservationBytes(inspector.fs, contract.ConfigPath)
+	if err != nil {
+		return EtcdRecoveryObservation{}, err
+	}
+	current, err := parseCurrentEtcdConfig(data)
+	if err != nil {
+		return EtcdRecoveryObservation{}, err
+	}
+	if current.Scheme != contract.Scheme || current.ClientPort != contract.ClientPort || current.PeerPort != contract.PeerPort {
+		return EtcdRecoveryObservation{}, errors.New("xRocket current etcd endpoint shape differs from the frozen rollback contract")
+	}
 	state := restoreEtcdState{
 		ConfigPath: contract.ConfigPath, EtcdctlPath: contract.EtcdctlPath, Scheme: contract.Scheme,
-		ClientAddress: contract.OldClient, ClientPort: contract.ClientPort,
-		PeerAddress: contract.OldPeer, PeerPort: contract.PeerPort,
+		ClientAddress: current.ClientAddress, ClientPort: contract.ClientPort,
+		PeerAddress: current.PeerAddress, PeerPort: contract.PeerPort,
 		MemberID: contract.MemberID, MemberCount: contract.MemberCount,
 		ServiceName: contract.ServiceName, ControlAdapter: contract.ControlAdapter,
 	}
@@ -1251,7 +1270,7 @@ func (inspector *productionReadOnlyInspector) observeEtcd(ctx context.Context, s
 	}
 	endpoint := etcdEndpoint(state.Scheme, state.ClientAddress, state.ClientPort)
 	health, err := inspector.executor.Execute(ctx, executor.Command{Name: "env", Args: []string{"ETCDCTL_API=3", state.EtcdctlPath, "--endpoints=" + endpoint, "endpoint", "health"}})
-	if err != nil || health.StdoutTruncated || health.StderrTruncated || !strings.Contains(strings.ToLower(health.Stdout), "healthy") {
+	if err != nil || health.StdoutTruncated || health.StderrTruncated || !strictEtcdHealthOutput(health.Stdout) {
 		return EtcdRecoveryObservation{}, errors.New("xRocket observed etcd endpoint is not healthy")
 	}
 	members, err := inspector.executor.Execute(ctx, executor.Command{Name: "env", Args: []string{"ETCDCTL_API=3", state.EtcdctlPath, "--endpoints=" + endpoint, "member", "list", "-w", "json"}, OutputLimit: maxLogicalKVOutputBytes})

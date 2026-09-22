@@ -310,9 +310,19 @@ func validateOperationExecutionResultShape(action task.OperationAction, phase ta
 				}
 			}
 			return nil
-		case task.OperationActionCreateRestorePoint, task.OperationActionRollback:
+		case task.OperationActionCreateRestorePoint:
 			if outputs != 0 {
-				return errors.New("failed mutation action must not carry optimistic success output")
+				return errors.New("failed restore-point action must not carry optimistic success output")
+			}
+			return nil
+		case task.OperationActionRollback:
+			if result.RestorePoint != nil || result.Apply != nil || result.Verification != nil {
+				return errors.New("failed rollback action must not carry mixed action output")
+			}
+			if result.Rollback != nil {
+				if err := validateFailedRollbackEvidence(*result.Rollback); err != nil {
+					return err
+				}
 			}
 			return nil
 		default:
@@ -364,7 +374,33 @@ func validateFailedApplyEvidence(result operation.ApplyResult) error {
 	if !json.Valid(result.State.Payload) {
 		return errors.New("failed apply evidence state payload must be valid JSON")
 	}
-	return nil
+	switch result.MutationState {
+	case operation.MutationNotStarted, operation.MutationChanged, operation.MutationMayHaveChanged:
+		return nil
+	default:
+		return errors.New("failed apply evidence requires a typed mutation state")
+	}
+}
+
+func validateFailedRollbackEvidence(result operation.RollbackResult) error {
+	if strings.TrimSpace(result.Checkpoint) == "" {
+		return errors.New("failed rollback evidence requires a checkpoint")
+	}
+	if strings.TrimSpace(result.State.SchemaVersion) == "" {
+		return errors.New("failed rollback evidence requires a state schema version")
+	}
+	if len(result.State.Payload) == 0 || !json.Valid(result.State.Payload) {
+		return errors.New("failed rollback evidence requires valid state payload")
+	}
+	if result.Restored {
+		return errors.New("failed rollback evidence cannot claim restored=true")
+	}
+	switch result.MutationState {
+	case operation.MutationNotStarted, operation.MutationChanged, operation.MutationMayHaveChanged:
+		return nil
+	default:
+		return errors.New("failed rollback evidence requires a typed mutation state")
+	}
 }
 
 func operationExecutionResultSnapshot(contract task.OperationExecutionContract, phase task.Phase, result task.OperationExecutionResult, at time.Time) operationrun.ExecutionSnapshot {
@@ -385,6 +421,12 @@ func operationExecutionResultSnapshot(contract task.OperationExecutionContract, 
 				stage.VerificationAt = at
 				stage.Verification = result.Verification
 				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Verification: result.Verification})
+			}
+		case task.OperationActionRollback:
+			if result.Rollback != nil {
+				stage.RollbackAt = at
+				stage.Rollback = result.Rollback
+				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Rollback: result.Rollback})
 			}
 		case task.OperationActionVerifyRollback:
 			if result.Verification != nil && !result.Verification.Passed {

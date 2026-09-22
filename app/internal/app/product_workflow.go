@@ -660,8 +660,35 @@ func (service *ProductOperations) continueOperationRun(ctx context.Context, runI
 			}
 			return err
 		case task.OperationActionApply:
-			_, err = service.advance(ctx, run, operation.StateInterrupted, "apply_outcome_requires_reconcile", "Apply failed with mutation outcome requiring reconciliation", &operationrun.Recovery{Code: "apply_outcome_uncertain", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile_before_retry_or_rollback", ManualReview: true})
-			return err
+			facts, factsErr := stageExecutionFacts(run, stageIndex)
+			if factsErr != nil || facts.Apply == nil {
+				_, err = service.advance(ctx, run, operation.StateInterrupted, "apply_failed_without_typed_outcome", "Apply failed without durable typed mutation evidence", &operationrun.Recovery{Code: "apply_outcome_missing", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile", ManualReview: true})
+				return err
+			}
+			switch facts.Apply.MutationState {
+			case operation.MutationNotStarted:
+				_, err = service.advance(ctx, run, operation.StateFailed, "apply_failed_before_mutation", "Apply failed before the first mutation", &operationrun.Recovery{Code: "apply_not_started", Checkpoint: run.Status.Checkpoint, SafeNext: "create_new_run_after_fix", ManualReview: false})
+				if err == nil {
+					err = service.releaseLease(ctx, run)
+				}
+				return err
+			case operation.MutationChanged:
+				if facts.RestorePoint == nil {
+					_, err = service.advance(ctx, run, operation.StateInterrupted, "apply_changed_without_rollback_proof", "Apply changed state but rollback prerequisites are incomplete", &operationrun.Recovery{Code: "rollback_prerequisites_missing", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile", ManualReview: true})
+					return err
+				}
+				if _, err = service.ensureLease(ctx, run); err != nil {
+					return err
+				}
+				_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, task.OperationActionRollback, operation.StateRollingBack, "rollback_queued")
+				return err
+			case operation.MutationMayHaveChanged:
+				_, err = service.advance(ctx, run, operation.StateInterrupted, "apply_outcome_requires_reconcile", "Apply failed with an ambiguous mutation outcome", &operationrun.Recovery{Code: "apply_outcome_uncertain", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile_before_retry_or_rollback", ManualReview: true})
+				return err
+			default:
+				_, err = service.advance(ctx, run, operation.StateInterrupted, "apply_outcome_invalid", "Apply failed with an invalid mutation outcome", &operationrun.Recovery{Code: "apply_outcome_invalid", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile", ManualReview: true})
+				return err
+			}
 		case task.OperationActionVerify:
 			facts, factsErr := stageExecutionFacts(run, stageIndex)
 			if factsErr != nil || facts.RestorePoint == nil || facts.Apply == nil {
@@ -674,8 +701,30 @@ func (service *ProductOperations) continueOperationRun(ctx context.Context, runI
 			}
 			_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, task.OperationActionRollback, operation.StateRollingBack, "rollback_queued")
 			return err
-		case task.OperationActionRollback, task.OperationActionVerifyRollback:
-			_, err = service.advance(ctx, run, operation.StateRollbackFailed, "rollback_failed", "rollback or rollback verification failed", &operationrun.Recovery{Code: "rollback_failed", SafeNext: "manual_recovery", ManualReview: true})
+		case task.OperationActionRollback:
+			facts, factsErr := stageExecutionFacts(run, stageIndex)
+			recovery := &operationrun.Recovery{Code: "rollback_outcome_missing", Checkpoint: run.Status.Checkpoint, SafeNext: "manual_recovery", ManualReview: true}
+			message := "rollback failed without durable typed mutation evidence"
+			if factsErr == nil && facts.Rollback != nil {
+				switch facts.Rollback.MutationState {
+				case operation.MutationNotStarted:
+					recovery = &operationrun.Recovery{Code: "rollback_not_started", Checkpoint: run.Status.Checkpoint, SafeNext: "reconcile_before_retry", ManualReview: true}
+					message = "rollback failed before its first recovery mutation"
+				case operation.MutationChanged:
+					recovery = &operationrun.Recovery{Code: "rollback_changed_but_failed", Checkpoint: run.Status.Checkpoint, SafeNext: "verify_or_reconcile_recovery_state", ManualReview: true}
+					message = "rollback changed recovery state but did not complete"
+				case operation.MutationMayHaveChanged:
+					recovery = &operationrun.Recovery{Code: "rollback_outcome_uncertain", Checkpoint: run.Status.Checkpoint, SafeNext: "manual_recovery", ManualReview: true}
+					message = "rollback may have partially changed recovery state"
+				}
+			}
+			_, err = service.advance(ctx, run, operation.StateRollbackFailed, "rollback_failed", message, recovery)
+			if err == nil {
+				err = service.releaseLease(ctx, run)
+			}
+			return err
+		case task.OperationActionVerifyRollback:
+			_, err = service.advance(ctx, run, operation.StateRollbackFailed, "rollback_verification_failed", "rollback verification failed", &operationrun.Recovery{Code: "rollback_verification_failed", SafeNext: "manual_recovery", ManualReview: true})
 			if err == nil {
 				err = service.releaseLease(ctx, run)
 			}

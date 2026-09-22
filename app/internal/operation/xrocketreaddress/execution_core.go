@@ -20,8 +20,17 @@ import (
 
 const ApplyResultSchema = "xrocket.readdress.apply-stage.v1"
 
+type MutationState = operation.MutationState
+
+const (
+	MutationNotStarted     = operation.MutationNotStarted
+	MutationChanged        = operation.MutationChanged
+	MutationMayHaveChanged = operation.MutationMayHaveChanged
+)
+
 type LocalMutationReceipt struct {
-	Digest string `json:"digest"`
+	Digest string        `json:"digest"`
+	State  MutationState `json:"state"`
 }
 
 type AliasStageContract struct {
@@ -78,7 +87,8 @@ type EtcdStageContract struct {
 	NewPeer        string `json:"new_peer_address"`
 	PeerPort       int    `json:"peer_port"`
 	ServiceName    string `json:"service_name"`
-	ControlAdapter string `json:"control_adapter"`
+	ControlAdapter   string `json:"control_adapter"`
+	LogicalKVDigest  string `json:"logical_kv_digest"`
 }
 
 type ConfdStageContract struct {
@@ -218,6 +228,7 @@ type applyStageReceipt struct {
 	Expectation           stageExpectation       `json:"expectation"`
 	AlreadySatisfied      bool                   `json:"already_satisfied"`
 	AdapterReceipt        *LocalMutationReceipt  `json:"adapter_receipt,omitempty"`
+	Failed                bool                   `json:"failed,omitempty"`
 }
 
 type executionStageContext struct {
@@ -240,6 +251,7 @@ func (definition *Definition) applyStage(ctx context.Context, input operation.Ap
 
 	alreadySatisfied := false
 	var adapterReceipt *LocalMutationReceipt
+	var mutateErr error
 	if stageContext.spec.Writes {
 		if input.Lease == nil {
 			return operation.ApplyResult{}, errors.New("xRocket mutating stage requires an authoritative lease")
@@ -255,14 +267,12 @@ func (definition *Definition) applyStage(ctx context.Context, input operation.Ap
 			return operation.ApplyResult{}, fmt.Errorf("inspect xRocket stage before mutation: %w", err)
 		}
 		if !alreadySatisfied {
-			receipt, mutateErr := definition.mutateExpectation(ctx, stageContext.expectation)
-			if mutateErr != nil {
-				return operation.ApplyResult{}, mutateErr
-			}
+			receipt, mutationErr := definition.mutateExpectation(ctx, stageContext.expectation)
 			if err := validateLocalMutationReceipt(receipt); err != nil {
 				return operation.ApplyResult{}, err
 			}
 			adapterReceipt = &receipt
+			mutateErr = mutationErr
 		}
 	}
 
@@ -285,21 +295,31 @@ func (definition *Definition) applyStage(ctx context.Context, input operation.Ap
 		Expectation:           stageContext.expectation,
 		AlreadySatisfied:      alreadySatisfied,
 		AdapterReceipt:        adapterReceipt,
+		Failed:                mutateErr != nil,
 	}
 	artifact, err := encodeArtifact(ApplyResultSchema, receipt)
 	if err != nil {
 		return operation.ApplyResult{}, err
 	}
-	return operation.ApplyResult{
-		Changed:    stageContext.spec.Writes && !alreadySatisfied,
-		Checkpoint: stageContext.stage.Checkpoint,
+	mutationState := MutationNotStarted
+	if adapterReceipt != nil {
+		mutationState = adapterReceipt.State
+	}
+	result := operation.ApplyResult{
+		Changed:       mutationState != MutationNotStarted,
+		MutationState: mutationState,
+		Checkpoint:    stageContext.stage.Checkpoint,
 		State:      artifact,
 		Evidence: []operation.EvidenceRef{
 			{ID: input.RestorePoint.ID, Kind: "restore_point", SHA256: receipt.RestoreManifestSHA256},
 			{ID: stageContext.stage.ID, Kind: "xrocket_stage"},
 			{ID: stageContext.manifest.NodeID, Kind: "xrocket_stage_executor"},
 		},
-	}, nil
+	}
+	if mutateErr == nil && stageContext.spec.Kind == stageKindOS && adapterReceipt != nil && adapterReceipt.State == MutationChanged {
+		result.Reconnect = &operation.ReconnectHandoff{Barrier: operation.StageBarrierAgentReconnect, Reboot: true, BootIDBefore: stageContext.expectation.OS.BootIDBefore}
+	}
+	return result, mutateErr
 }
 
 func (definition *Definition) verifyStage(ctx context.Context, input operation.VerifyInput) (operation.Verification, error) {
@@ -550,6 +570,8 @@ func bindStageRecoveryBaselines(expectation *stageExpectation, manifest restoreP
 			return err
 		}
 		expectation.ExternalDB.BaselineConfig = baseline
+	case stageKindEtcd:
+		expectation.Etcd.LogicalKVDigest = recovery.LogicalKVDigest
 	case stageKindConfd:
 		files := make([]RecoveryArtifactRef, 0, len(expectation.Confd.Destinations))
 		for _, destination := range expectation.Confd.Destinations {
@@ -773,7 +795,12 @@ func validateLocalMutationReceipt(receipt LocalMutationReceipt) error {
 	if !validSHA256Digest(receipt.Digest) {
 		return errors.New("xRocket local mutation adapter must return a bounded sha256 receipt digest")
 	}
-	return nil
+	switch receipt.State {
+	case MutationNotStarted, MutationChanged, MutationMayHaveChanged:
+		return nil
+	default:
+		return errors.New("xRocket local mutation adapter returned an invalid mutation state")
+	}
 }
 
 func decodeApplyStageReceipt(result operation.ApplyResult) (applyStageReceipt, error) {
@@ -799,11 +826,15 @@ func decodeApplyStageReceipt(result operation.ApplyResult) (applyStageReceipt, e
 	if receipt.RestorePointID != restorePointID(receipt.RunID, receipt.NodeID, receipt.StageID) {
 		return applyStageReceipt{}, errors.New("xRocket ApplyResult RestorePoint identity is invalid")
 	}
-	if result.Changed != (receipt.Writes && !receipt.AlreadySatisfied) {
-		return applyStageReceipt{}, errors.New("xRocket ApplyResult changed flag is inconsistent with the stage receipt")
+	expectedState := MutationNotStarted
+	if receipt.AdapterReceipt != nil {
+		expectedState = receipt.AdapterReceipt.State
+	}
+	if result.MutationState != expectedState || result.Changed != (expectedState != MutationNotStarted) {
+		return applyStageReceipt{}, errors.New("xRocket ApplyResult mutation state/changed flag is inconsistent with typed adapter evidence")
 	}
 	if receipt.Writes && !receipt.AlreadySatisfied && receipt.AdapterReceipt == nil {
-		return applyStageReceipt{}, errors.New("xRocket changed stage receipt is missing bounded adapter evidence")
+		return applyStageReceipt{}, errors.New("xRocket attempted stage receipt is missing bounded adapter evidence")
 	}
 	if (!receipt.Writes || receipt.AlreadySatisfied) && receipt.AdapterReceipt != nil {
 		return applyStageReceipt{}, errors.New("xRocket no-op stage receipt cannot contain mutation adapter evidence")

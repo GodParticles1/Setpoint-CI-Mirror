@@ -26,18 +26,29 @@ func TestFailedApplyPreservesOnlyMeaningfulDefinitionEvidence(t *testing.T) {
 		name     string
 		apply    operation.ApplyResult
 		wantKeep bool
+		err      error
 	}{
 		{
 			name: "meaningful",
 			apply: operation.ApplyResult{
-				Changed:    false,
-				Checkpoint: "apply_partial",
+				Changed:       false,
+				MutationState: operation.MutationNotStarted,
+				Checkpoint:    "apply_partial",
 				State: operation.Artifact{
 					SchemaVersion: "clickhouse.apply.v1",
 					Payload:       json.RawMessage(`{"run_id":"run-1","committed":[]}`),
 				},
 			},
 			wantKeep: true,
+		},
+		{
+			name: "ambiguous_cancel",
+			apply: operation.ApplyResult{
+				Changed: true, MutationState: operation.MutationMayHaveChanged,
+				Checkpoint: "apply_partial",
+				State: operation.Artifact{SchemaVersion: "clickhouse.apply.v1", Payload: json.RawMessage(`{"mutation_state":"MAY_HAVE_CHANGED"}`)},
+			},
+			wantKeep: true, err: context.Canceled,
 		},
 		{name: "zero", apply: operation.ApplyResult{}, wantKeep: false},
 		{
@@ -58,7 +69,10 @@ func TestFailedApplyPreservesOnlyMeaningfulDefinitionEvidence(t *testing.T) {
 			definition := &failedApplyActionDefinition{
 				actionTestDefinition: &actionTestDefinition{metadata: metadata},
 				result:               test.apply,
-				err:                  errors.New("definition apply failed after bounded execution began"),
+				err:                  test.err,
+			}
+			if definition.err == nil {
+				definition.err = errors.New("definition apply failed after bounded execution began")
 			}
 			resource := actionTask(t, metadata, task.OperationActionApply)
 			now := time.Now().UTC()
@@ -101,5 +115,61 @@ func TestFailedApplyPreservesOnlyMeaningfulDefinitionEvidence(t *testing.T) {
 				t.Fatalf("zero or malformed Apply evidence must be dropped: %#v", result.Apply)
 			}
 		})
+	}
+}
+
+type failedRollbackActionDefinition struct {
+	*actionTestDefinition
+	result operation.RollbackResult
+	err    error
+}
+
+func (definition *failedRollbackActionDefinition) Rollback(context.Context, operation.RollbackInput) (operation.RollbackResult, error) {
+	return definition.result, definition.err
+}
+
+func TestFailedRollbackPreservesMeaningfulTypedEvidence(t *testing.T) {
+	base, metadata, restore := newActionTestRunner(t)
+	definition := &failedRollbackActionDefinition{
+		actionTestDefinition: &actionTestDefinition{metadata: metadata},
+		result: operation.RollbackResult{
+			Restored: false, MutationState: operation.MutationMayHaveChanged,
+			Checkpoint: "rollback_partial",
+			State: operation.Artifact{SchemaVersion: "clickhouse.rollback.v1", Payload: json.RawMessage(`{"mutation_state":"MAY_HAVE_CHANGED"}`)},
+		},
+		err: errors.New("definition rollback failed after bounded recovery began"),
+	}
+	resource := actionTask(t, metadata, task.OperationActionRollback)
+	now := time.Now().UTC()
+	key, err := operation.ResourceLockKey(resource.Spec.Targets[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &authorityStub{lease: operation.LockLease{
+		ID: "lease-rollback", OwnerID: "run-1", Resources: []operation.LockResource{{Key: key}},
+		AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute),
+	}}
+	adapter, err := NewStaticOperationExecutionAdapter(metadata.ID, definition, restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := NewOperationExecutionResolver(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewOperationExecutionRunnerWithAuthority(base.registry, resolver, actionTestExecutor{}, "linux", authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousNow := runnerNow
+	runnerNow = func() time.Time { return now }
+	defer func() { runnerNow = previousNow }()
+
+	result, runErr := runner.Execute(context.Background(), resource)
+	if runErr == nil || result.Error == nil || result.Error.Code != "rollback_failed" || result.Rollback == nil {
+		t.Fatalf("result=%#v err=%v", result, runErr)
+	}
+	if result.Rollback.MutationState != operation.MutationMayHaveChanged || result.Rollback.Checkpoint != "rollback_partial" {
+		t.Fatalf("typed rollback evidence was not preserved: %#v", result.Rollback)
 	}
 }

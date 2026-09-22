@@ -60,7 +60,7 @@ func (fake *stageFakeAdapter) mutate(kind stageKind, nodeID string) LocalMutatio
 	if !fake.leaveUnsatisfied {
 		fake.satisfied[key] = true
 	}
-	return LocalMutationReceipt{Digest: digestBytes([]byte("fake-adapter:" + key))}
+	return LocalMutationReceipt{Digest: digestBytes([]byte("fake-adapter:" + key)), State: MutationChanged}
 }
 
 func (fake *stageFakeAdapter) AddTargetAlias(_ context.Context, contract AliasStageContract) (LocalMutationReceipt, error) {
@@ -473,5 +473,41 @@ func TestProductionDefinitionAndRollbackRemainFailClosed(t *testing.T) {
 	}
 	if _, err := injected.VerifyRollback(context.Background(), operation.VerifyRollbackInput{}); !errors.Is(err, errApplyMechanismUnverified) {
 		t.Fatalf("VerifyRollback err=%v", err)
+	}
+}
+
+type failingStageAdapter struct{ *stageFakeAdapter }
+
+func (fake *failingStageAdapter) AddTargetAlias(_ context.Context, contract AliasStageContract) (LocalMutationReceipt, error) {
+	fake.aliasContracts = append(fake.aliasContracts, contract)
+	fake.mutations = append(fake.mutations, stageStateKey(stageKindAlias, contract.NodeID))
+	return LocalMutationReceipt{
+		Digest: digestBytes([]byte("fake-partial-alias")),
+		State:  MutationMayHaveChanged,
+	}, errors.New("injected ambiguous alias mutation failure")
+}
+
+func TestApplyRetainsTypedAmbiguousMutationEvidenceOnError(t *testing.T) {
+	const stageIndex = 2
+	plan := restorePlan(t)
+	fake := &failingStageAdapter{stageFakeAdapter: newStageFakeAdapter()}
+	definition, err := NewDefinitionWithStageAdapters(&stageNoopExecutor{}, fake, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := stageApplyInput(t, plan, stageIndex)
+	result, applyErr := definition.Apply(context.Background(), input)
+	if applyErr == nil || !result.Changed || result.Checkpoint == "" || len(result.State.Payload) == 0 {
+		t.Fatalf("result=%#v err=%v", result, applyErr)
+	}
+	receipt, err := decodeApplyStageReceipt(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Failed || receipt.AdapterReceipt == nil || receipt.AdapterReceipt.State != MutationMayHaveChanged {
+		t.Fatalf("typed failure receipt=%#v", receipt)
+	}
+	if result.Reconnect != nil {
+		t.Fatalf("failed mutation must not auto-request reboot: %#v", result.Reconnect)
 	}
 }

@@ -782,3 +782,37 @@ func TestControlledProductRecoveryPathsAreStable(t *testing.T) {
 		t.Fatalf("unexpected controlled product bundle size=%d", len(copyActual))
 	}
 }
+
+type unhealthyTextExecutor struct{ *productionFixtureExecutor }
+
+func (fake *unhealthyTextExecutor) Execute(ctx context.Context, command executor.Command) (executor.Result, error) {
+	if command.Name == "env" && len(command.Args) == 5 && command.Args[3] == "endpoint" && command.Args[4] == "health" {
+		fake.commands = append(fake.commands, command)
+		return executor.Result{Stdout: "endpoint is unhealthy\n"}, nil
+	}
+	return fake.productionFixtureExecutor.Execute(ctx, command)
+}
+
+func TestProductionRecoveryRejectsUnhealthySubstringWithoutCommandError(t *testing.T) {
+	fs := newMappedRecoveryFilesystem(t)
+	before := productionBeforeFixture()
+	seedProductionFiles(t, fs, before)
+	base := newProductionFixtureExecutor(fs)
+	collector := &productionRecoveryCollector{executor: &unhealthyTextExecutor{productionFixtureExecutor: base}, fs: fs}
+	request := productionCaptureRequest(t, 9, before)
+	if _, err := collector.Capture(context.Background(), request); err == nil {
+		t.Fatal("endpoint is unhealthy was accepted by recovery capture")
+	}
+
+	inspector := &productionReadOnlyInspector{executor: &unhealthyTextExecutor{productionFixtureExecutor: newProductionFixtureExecutor(fs)}, fs: fs}
+	state := RollbackEtcdContract{
+		ConfigPath: before.Etcd.ConfigPath, EtcdctlPath: before.Etcd.EtcdctlPath, Scheme: before.Etcd.Scheme,
+		OldClient: before.Etcd.ClientAddress, ClientPort: before.Etcd.ClientPort,
+		OldPeer: before.Etcd.PeerAddress, PeerPort: before.Etcd.PeerPort,
+		MemberID: before.Etcd.MemberID, MemberCount: before.Etcd.MemberCount,
+		ServiceName: before.Etcd.ServiceName, ControlAdapter: before.Etcd.ControlAdapter,
+	}
+	if _, err := inspector.EtcdRecoveryState(context.Background(), state); err == nil {
+		t.Fatal("endpoint is unhealthy was accepted by read-only inspection")
+	}
+}

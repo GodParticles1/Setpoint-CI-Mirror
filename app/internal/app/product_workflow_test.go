@@ -257,7 +257,7 @@ func TestProductContinuationVerifyFailureQueuesRollbackOnlyWithDurablePrerequisi
 	}
 }
 
-func TestProductContinuationFailedApplyInterruptsWithoutRollback(t *testing.T) {
+func TestProductContinuationFailedApplyWithoutTypedOutcomeInterrupts(t *testing.T) {
 	service, repo, lease := productWorkflowFixture(task.OperationActionApply, task.PhaseFailed)
 	if err := service.ContinueOperationRun(context.Background(), "run-1"); err != nil {
 		t.Fatal(err)
@@ -270,6 +270,41 @@ func TestProductContinuationFailedApplyInterruptsWithoutRollback(t *testing.T) {
 	}
 	if lease.releases != 0 {
 		t.Fatal("interrupted mutation must keep supervised lease for reconciliation")
+	}
+}
+
+
+func TestProductContinuationFailedApplyRoutesByTypedMutationState(t *testing.T) {
+	tests := []struct {
+		name          string
+		state         operation.MutationState
+		wantState     operation.State
+		wantRecovery  string
+		wantRollback  bool
+		wantRelease   int
+	}{
+		{name: "not-started", state: operation.MutationNotStarted, wantState: operation.StateFailed, wantRecovery: "apply_not_started", wantRelease: 1},
+		{name: "changed", state: operation.MutationChanged, wantState: operation.StateRollingBack, wantRollback: true},
+		{name: "may-have-changed", state: operation.MutationMayHaveChanged, wantState: operation.StateInterrupted, wantRecovery: "apply_outcome_uncertain"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service, repo, lease := productWorkflowFixture(task.OperationActionApply, task.PhaseFailed)
+			repo.run.Execution.Apply.MutationState = tc.state
+			if err := service.ContinueOperationRun(context.Background(), "run-1"); err != nil {
+				t.Fatal(err)
+			}
+			if repo.run.Status.State != tc.wantState || lease.releases != tc.wantRelease {
+				t.Fatalf("run=%#v releases=%d", repo.run.Status, lease.releases)
+			}
+			_, rollbackQueued := repo.tasks["run-1:rollback"]
+			if rollbackQueued != tc.wantRollback {
+				t.Fatalf("rollback_queued=%v want=%v tasks=%#v", rollbackQueued, tc.wantRollback, repo.tasks)
+			}
+			if tc.wantRecovery != "" && (repo.run.Status.Recovery == nil || repo.run.Status.Recovery.Code != tc.wantRecovery) {
+				t.Fatalf("recovery=%#v want_code=%s", repo.run.Status.Recovery, tc.wantRecovery)
+			}
+		})
 	}
 }
 

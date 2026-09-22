@@ -93,9 +93,9 @@ type LocalRollbackInspectionAdapter interface {
 }
 
 type RollbackMutationReceipt struct {
-	Digest               string `json:"digest"`
-	BootIDBeforeRollback string `json:"boot_id_before_rollback,omitempty"`
-	BootIDAfterRollback  string `json:"boot_id_after_rollback,omitempty"`
+	Digest               string        `json:"digest"`
+	State                MutationState `json:"state"`
+	BootIDBeforeRollback string        `json:"boot_id_before_rollback,omitempty"`
 }
 
 type RollbackAliasContract struct {
@@ -205,6 +205,7 @@ type rollbackStageReceipt struct {
 	MutationPerformed      bool                     `json:"mutation_performed"`
 	Expectation            rollbackStageExpectation `json:"expectation"`
 	AdapterReceipt         *RollbackMutationReceipt `json:"adapter_receipt,omitempty"`
+	Failed                 bool                     `json:"failed,omitempty"`
 }
 
 func recoveryOwnerFromManifest(manifest restorePointManifest) RecoveryArtifactOwner {
@@ -569,18 +570,16 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 				return operation.RollbackResult{}, errors.New("xRocket OS rollback requires a current boot_id before mutation")
 			}
 		}
-		receipt, mutateErr := definition.rollbackMutator.RestoreStage(ctx, expectation)
-		if mutateErr != nil {
-			return operation.RollbackResult{}, mutateErr
-		}
+		receipt, mutationErr := definition.rollbackMutator.RestoreStage(ctx, expectation)
 		if err := validateRollbackMutationReceipt(receipt, stageContext.spec); err != nil {
 			return operation.RollbackResult{}, err
 		}
-		if expectation.OS != nil && receipt.BootIDBeforeRollback != bootIDBeforeRollback {
+		if expectation.OS != nil && receipt.State != MutationNotStarted && receipt.BootIDBeforeRollback != bootIDBeforeRollback {
 			return operation.RollbackResult{}, errors.New("xRocket OS rollback receipt boot_id does not match the pre-mutation observation")
 		}
-		mutationPerformed = true
+		mutationPerformed = receipt.State != MutationNotStarted
 		adapterReceipt = &receipt
+		err = mutationErr
 	}
 	recoveryDigest, err := recoveryContractDigest(*stageContext.manifest.Recovery)
 	if err != nil {
@@ -607,6 +606,7 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 		MutationPerformed:      mutationPerformed,
 		Expectation:            expectation,
 		AdapterReceipt:         adapterReceipt,
+		Failed:                 err != nil,
 	}
 	if applyReceipt.RestoreManifestSHA256 != receipt.RestoreManifestSHA256 {
 		return operation.RollbackResult{}, errors.New("xRocket rollback RestorePoint digest differs from accepted Apply evidence")
@@ -622,7 +622,15 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 	for _, recoveryArtifact := range rollbackRecoveryArtifacts(expectation) {
 		evidence = append(evidence, operation.EvidenceRef{ID: recoveryArtifact.ID, Kind: recoveryArtifact.Kind, SHA256: recoveryArtifact.SHA256})
 	}
-	return operation.RollbackResult{Restored: true, Checkpoint: checkpoint, State: artifact, Evidence: evidence}, nil
+	mutationState := MutationNotStarted
+	if adapterReceipt != nil {
+		mutationState = adapterReceipt.State
+	}
+	result := operation.RollbackResult{Restored: err == nil, MutationState: mutationState, Checkpoint: checkpoint, State: artifact, Evidence: evidence}
+	if err == nil && expectation.OS != nil && adapterReceipt != nil && adapterReceipt.State == MutationChanged {
+		result.Reconnect = &operation.ReconnectHandoff{Barrier: operation.StageBarrierAgentReconnect, Reboot: true, BootIDBefore: adapterReceipt.BootIDBeforeRollback}
+	}
+	return result, err
 }
 
 func (definition *Definition) validateRollbackInput(input operation.RollbackInput) (executionStageContext, applyStageReceipt, rollbackStageExpectation, error) {
@@ -697,13 +705,18 @@ func validateRollbackMutationReceipt(receipt RollbackMutationReceipt, spec canon
 	if !validSHA256Digest(receipt.Digest) {
 		return errors.New("xRocket rollback adapter must return a bounded sha256 receipt digest")
 	}
+	switch receipt.State {
+	case MutationNotStarted, MutationChanged, MutationMayHaveChanged:
+	default:
+		return errors.New("xRocket rollback adapter returned an invalid mutation state")
+	}
 	if spec.Kind == stageKindOS {
-		if receipt.BootIDBeforeRollback == "" || receipt.BootIDAfterRollback == "" || receipt.BootIDBeforeRollback == receipt.BootIDAfterRollback {
-			return errors.New("xRocket OS rollback receipt must prove a boot_id transition")
+		if receipt.State != MutationNotStarted && strings.TrimSpace(receipt.BootIDBeforeRollback) == "" {
+			return errors.New("xRocket OS rollback receipt must bind the pre-reboot boot_id")
 		}
 		return nil
 	}
-	if receipt.BootIDBeforeRollback != "" || receipt.BootIDAfterRollback != "" {
+	if receipt.BootIDBeforeRollback != "" {
 		return errors.New("non-OS xRocket rollback receipt cannot carry boot_id evidence")
 	}
 	return nil
@@ -729,20 +742,29 @@ func decodeRollbackStageReceipt(result operation.RollbackResult) (rollbackStageR
 	if receipt.SchemaVersion != RollbackResultSchema || receipt.OperationID != OperationID || receipt.OperationVersion != Metadata().Version || receipt.RunID == "" || receipt.StageID == "" || receipt.NodeID == "" || receipt.RestorePointID == "" || !validSHA256Digest(receipt.RestoreManifestSHA256) || !validSHA256Digest(receipt.RecoveryContractSHA256) || !validSHA256Digest(receipt.ApplyStateSHA256) {
 		return rollbackStageReceipt{}, errors.New("xRocket RollbackResult identity is invalid")
 	}
-	if result.Restored == false {
-		return rollbackStageReceipt{}, errors.New("xRocket RollbackResult must represent a completed bounded restore attempt")
+	if result.Restored == receipt.Failed {
+		return rollbackStageReceipt{}, errors.New("xRocket RollbackResult restored flag differs from typed rollback failure state")
+	}
+	expectedState := MutationNotStarted
+	if receipt.AdapterReceipt != nil {
+		expectedState = receipt.AdapterReceipt.State
+	}
+	if result.MutationState != expectedState {
+		return rollbackStageReceipt{}, errors.New("xRocket RollbackResult mutation state differs from typed adapter evidence")
 	}
 	if result.Checkpoint != receipt.Checkpoint {
 		return rollbackStageReceipt{}, errors.New("xRocket RollbackResult checkpoint differs from typed rollback evidence")
 	}
-	if receipt.MutationPerformed != receipt.ApplyChanged {
-		return rollbackStageReceipt{}, errors.New("xRocket rollback mutation flag differs from accepted Apply changed state")
+	if receipt.MutationPerformed && !receipt.ApplyChanged {
+		return rollbackStageReceipt{}, errors.New("xRocket rollback cannot mutate when accepted Apply reported no changed state")
 	}
-	if receipt.MutationPerformed && receipt.AdapterReceipt == nil {
-		return rollbackStageReceipt{}, errors.New("xRocket mutating rollback receipt is missing adapter evidence")
+	if receipt.ApplyChanged && receipt.AdapterReceipt == nil {
+		return rollbackStageReceipt{}, errors.New("xRocket changed Apply rollback attempt is missing adapter evidence")
 	}
-	if !receipt.MutationPerformed && receipt.AdapterReceipt != nil {
-		return rollbackStageReceipt{}, errors.New("xRocket no-op rollback receipt cannot contain adapter evidence")
+	if receipt.AdapterReceipt != nil {
+		if receipt.MutationPerformed != (receipt.AdapterReceipt.State != MutationNotStarted) {
+			return rollbackStageReceipt{}, errors.New("xRocket rollback mutation flag differs from typed adapter state")
+		}
 	}
 	if err := validateRollbackExpectation(receipt.Expectation); err != nil {
 		return rollbackStageReceipt{}, err
@@ -778,7 +800,7 @@ func validateRollbackReceiptRestoreCorrelation(receipt rollbackStageReceipt, poi
 	if !reflect.DeepEqual(receipt.Expectation, expectation) {
 		return rollbackStageExpectation{}, canonicalStage{}, errors.New("xRocket RollbackResult expectation differs from the frozen recovery baseline")
 	}
-	if receipt.MutationPerformed && receipt.AdapterReceipt != nil {
+	if receipt.AdapterReceipt != nil {
 		if err := validateRollbackMutationReceipt(*receipt.AdapterReceipt, spec); err != nil {
 			return rollbackStageExpectation{}, canonicalStage{}, err
 		}
@@ -815,7 +837,7 @@ func (definition *Definition) verifyRollbackStage(ctx context.Context, input ope
 	if err := definition.validateRollbackRecoveryEvidence(ctx, expectation); err != nil {
 		return operation.Verification{}, err
 	}
-	passed, err := verifyRollbackObservedBaseline(ctx, definition.rollbackInspector, expectation, receipt)
+	passed, err := verifyRollbackObservedBaseline(ctx, definition.rollbackInspector, expectation, receipt, input.Rollback)
 	if err != nil {
 		return operation.Verification{}, err
 	}
@@ -825,7 +847,7 @@ func (definition *Definition) verifyRollbackStage(ctx context.Context, input ope
 	return operation.Verification{Passed: true, Summary: "xRocket rollback observed state matches the frozen run-owned recovery baseline"}, nil
 }
 
-func verifyRollbackObservedBaseline(ctx context.Context, inspector LocalRollbackInspectionAdapter, expectation rollbackStageExpectation, receipt rollbackStageReceipt) (bool, error) {
+func verifyRollbackObservedBaseline(ctx context.Context, inspector LocalRollbackInspectionAdapter, expectation rollbackStageExpectation, receipt rollbackStageReceipt, result operation.RollbackResult) (bool, error) {
 	observation, err := inspector.InspectRollback(ctx, expectation)
 	if err != nil {
 		return false, fmt.Errorf("inspect xRocket rollback postcondition: %w", err)
@@ -844,7 +866,7 @@ func verifyRollbackObservedBaseline(ctx context.Context, inspector LocalRollback
 		}
 	}
 	if expectation.OS != nil {
-		if receipt.AdapterReceipt == nil || observation.BootID == "" || observation.BootID != receipt.AdapterReceipt.BootIDAfterRollback {
+		if receipt.AdapterReceipt == nil || result.Reconnect == nil || result.Reconnect.Barrier != operation.StageBarrierAgentReconnect || result.Reconnect.BootIDBefore == "" || result.Reconnect.BootIDAfter == "" || result.Reconnect.BootIDBefore == result.Reconnect.BootIDAfter || observation.BootID != result.Reconnect.BootIDAfter {
 			return false, nil
 		}
 	}
@@ -881,7 +903,7 @@ func verifyRestoreProviderRollback(ctx context.Context, inspector LocalRollbackI
 			return operation.Verification{}, fmt.Errorf("xRocket restore-provider recovery artifact %s no longer matches", artifact.ID)
 		}
 	}
-	passed, err := verifyRollbackObservedBaseline(ctx, inspector, expectation, receipt)
+	passed, err := verifyRollbackObservedBaseline(ctx, inspector, expectation, receipt, result)
 	if err != nil {
 		return operation.Verification{}, err
 	}

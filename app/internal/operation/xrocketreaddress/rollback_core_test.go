@@ -35,10 +35,9 @@ func newRollbackFixtureAdapter() *rollbackFixtureAdapter {
 
 func (fake *rollbackFixtureAdapter) RestoreStage(_ context.Context, expectation rollbackStageExpectation) (RollbackMutationReceipt, error) {
 	fake.restoreCalls = append(fake.restoreCalls, expectation)
-	receipt := RollbackMutationReceipt{Digest: fake.rollbackMutationHash}
+	receipt := RollbackMutationReceipt{Digest: fake.rollbackMutationHash, State: MutationChanged}
 	if expectation.Kind == stageKindOS {
 		receipt.BootIDBeforeRollback = fake.rollbackBootBefore
-		receipt.BootIDAfterRollback = fake.rollbackBootAfter
 	}
 	return receipt, nil
 }
@@ -375,9 +374,10 @@ func TestRollbackOSReconnectBarrierAndBootTransition(t *testing.T) {
 	if len(fake.restoreCalls) != 1 || fake.restoreCalls[0].OS == nil || fake.restoreCalls[0].OS.Barrier != operation.StageBarrierAgentReconnect || !fake.restoreCalls[0].OS.Reboot {
 		t.Fatalf("OS rollback contract=%#v", fake.restoreCalls)
 	}
-	if receipt.Barrier != operation.StageBarrierAgentReconnect || receipt.AdapterReceipt == nil || receipt.AdapterReceipt.BootIDBeforeRollback == receipt.AdapterReceipt.BootIDAfterRollback {
-		t.Fatalf("OS rollback receipt=%#v", receipt)
+	if receipt.Barrier != operation.StageBarrierAgentReconnect || receipt.AdapterReceipt == nil || receipt.AdapterReceipt.BootIDBeforeRollback != fake.rollbackBootBefore || result.Reconnect == nil || result.Reconnect.BootIDBefore != fake.rollbackBootBefore || result.Reconnect.BootIDAfter != "" {
+		t.Fatalf("OS rollback receipt=%#v result=%#v", receipt, result)
 	}
+	result.Reconnect.BootIDAfter = fake.rollbackBootAfter
 	verification, err := definition.VerifyRollback(context.Background(), operation.VerifyRollbackInput{Runtime: input.Runtime, Plan: input.Plan, Stage: input.Stage, Rollback: result, RestorePoint: input.RestorePoint})
 	if err != nil || !verification.Passed {
 		t.Fatalf("OS VerifyRollback=%#v err=%v", verification, err)
@@ -460,5 +460,36 @@ func TestRecoveryArtifactContractCanonicalization(t *testing.T) {
 	copyValue.Owner.ParticipantNodeIDs = append([]string(nil), copyValue.Owner.ParticipantNodeIDs...)
 	if !reflect.DeepEqual(copyValue, *manifest.Recovery) {
 		t.Fatal("recovery contract copy changed identity")
+	}
+}
+
+type failingRollbackAdapter struct{ *rollbackFixtureAdapter }
+
+func (fake *failingRollbackAdapter) RestoreStage(_ context.Context, expectation rollbackStageExpectation) (RollbackMutationReceipt, error) {
+	fake.restoreCalls = append(fake.restoreCalls, expectation)
+	return RollbackMutationReceipt{
+		Digest: digestBytes([]byte("rollback-partial")),
+		State:  MutationMayHaveChanged,
+	}, errors.New("injected ambiguous rollback failure")
+}
+
+func TestRollbackRetainsTypedAmbiguousMutationEvidenceOnError(t *testing.T) {
+	base := newRollbackFixtureAdapter()
+	fake := &failingRollbackAdapter{rollbackFixtureAdapter: base}
+	definition, input := rollbackInput(t, base, 2)
+	definition.rollbackMutator = fake
+	result, rollbackErr := definition.Rollback(context.Background(), input)
+	if rollbackErr == nil || result.Restored || result.Checkpoint == "" || len(result.State.Payload) == 0 {
+		t.Fatalf("result=%#v err=%v", result, rollbackErr)
+	}
+	receipt, err := decodeRollbackStageReceipt(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Failed || !receipt.MutationPerformed || receipt.AdapterReceipt == nil || receipt.AdapterReceipt.State != MutationMayHaveChanged {
+		t.Fatalf("typed rollback failure receipt=%#v", receipt)
+	}
+	if result.Reconnect != nil {
+		t.Fatalf("failed rollback must not auto-request reboot: %#v", result.Reconnect)
 	}
 }

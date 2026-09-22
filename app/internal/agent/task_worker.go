@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"setpoint/internal/executor"
@@ -118,6 +119,8 @@ func (worker *TaskWorker) resume(ctx context.Context, entry taskJournalEntry) er
 		return worker.executeClaimed(ctx, entry)
 	case journalExecuting:
 		return worker.cacheAndSubmit(ctx, entry.Task, worker.interruptedSubmission(entry.Task))
+	case journalReconnecting:
+		return worker.resumeReconnect(ctx, entry)
 	case journalCompleted:
 		return worker.submitCached(ctx, entry)
 	default:
@@ -205,7 +208,108 @@ func (worker *TaskWorker) executeOperationAction(ctx, executionContext context.C
 	if err != nil || result.Error != nil {
 		phase = task.PhaseFailed
 	}
-	return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result})
+	submission := task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result}
+	if phase == task.PhaseSucceeded {
+		if handoff, handoffErr := reconnectHandoff(&submission); handoffErr == nil && handoff != nil {
+			return worker.cacheReconnectAndReboot(ctx, resource, submission)
+		} else if handoffErr != nil {
+			return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "operation_reconnect_contract_invalid", handoffErr))
+		}
+	}
+	return worker.cacheAndSubmit(ctx, resource, submission)
+}
+
+func reconnectHandoff(submission *task.ResultSubmission) (*operation.ReconnectHandoff, error) {
+	if submission == nil || submission.OperationExecutionResult == nil {
+		return nil, nil
+	}
+	result := submission.OperationExecutionResult
+	switch result.Action {
+	case task.OperationActionApply:
+		if result.Apply == nil || result.Apply.Reconnect == nil {
+			return nil, nil
+		}
+		if result.Rollback != nil {
+			return nil, errors.New("apply reconnect result contains rollback output")
+		}
+		return result.Apply.Reconnect, nil
+	case task.OperationActionRollback:
+		if result.Rollback == nil || result.Rollback.Reconnect == nil {
+			return nil, nil
+		}
+		if result.Apply != nil {
+			return nil, errors.New("rollback reconnect result contains apply output")
+		}
+		return result.Rollback.Reconnect, nil
+	default:
+		if result.Apply != nil && result.Apply.Reconnect != nil || result.Rollback != nil && result.Rollback.Reconnect != nil {
+			return nil, errors.New("non-destructive operation result cannot request reconnect")
+		}
+		return nil, nil
+	}
+}
+
+func (worker *TaskWorker) cacheReconnectAndReboot(ctx context.Context, resource task.Resource, submission task.ResultSubmission) error {
+	handoff, err := reconnectHandoff(&submission)
+	if err != nil || handoff == nil || handoff.Barrier != operation.StageBarrierAgentReconnect || !handoff.Reboot || strings.TrimSpace(handoff.BootIDBefore) == "" || handoff.BootIDAfter != "" {
+		if err == nil {
+			err = errors.New("operation reconnect handoff is incomplete")
+		}
+		return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "operation_reconnect_contract_invalid", err))
+	}
+	entry := taskJournalEntry{Version: 1, State: journalReconnecting, Task: task.Clone(resource), Submission: &submission}
+	if err := worker.journal.Save(entry); err != nil {
+		return &fatalTaskError{err: err}
+	}
+	result, rebootErr := worker.executor.Execute(ctx, executor.Command{Name: "reboot"})
+	if rebootErr != nil || result.StdoutTruncated || result.StderrTruncated {
+		if rebootErr == nil {
+			rebootErr = errors.New("reboot command output exceeded the bounded executor limit")
+		}
+		failed := submission
+		failed.Phase = task.PhaseFailed
+		failed.OperationExecutionResult.Error = &task.Failure{Code: "operation_reconnect_reboot_failed", Message: rebootErr.Error()}
+		return worker.cacheAndSubmit(ctx, resource, failed)
+	}
+	return nil
+}
+
+func (worker *TaskWorker) resumeReconnect(ctx context.Context, entry taskJournalEntry) error {
+	handoff, err := reconnectHandoff(entry.Submission)
+	if err != nil || handoff == nil {
+		if err == nil {
+			err = errors.New("cached reconnect handoff is missing")
+		}
+		return &fatalTaskError{err: err}
+	}
+	bootID, err := worker.currentBootID(ctx)
+	if err != nil {
+		return nil
+	}
+	if bootID == handoff.BootIDBefore {
+		return nil
+	}
+	handoff.BootIDAfter = bootID
+	entry.State = journalCompleted
+	if err := worker.journal.Save(entry); err != nil {
+		return &fatalTaskError{err: err}
+	}
+	return worker.submitCached(ctx, entry)
+}
+
+func (worker *TaskWorker) currentBootID(ctx context.Context) (string, error) {
+	result, err := worker.executor.Execute(ctx, executor.Command{Name: "cat", Args: []string{"--", "/proc/sys/kernel/random/boot_id"}})
+	if err != nil || result.StdoutTruncated || result.StderrTruncated {
+		if err != nil {
+			return "", err
+		}
+		return "", errors.New("boot_id output exceeded the bounded executor limit")
+	}
+	value := strings.TrimSpace(result.Stdout)
+	if value == "" || strings.ContainsAny(value, " \t\r\n") {
+		return "", errors.New("boot_id is empty or malformed")
+	}
+	return value, nil
 }
 
 func (worker *TaskWorker) cacheAndSubmit(ctx context.Context, resource task.Resource, submission task.ResultSubmission) error {

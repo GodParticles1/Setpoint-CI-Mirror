@@ -14,6 +14,13 @@ type ProductionReadOnlyInspector interface {
 	LocalRollbackInspectionAdapter
 }
 
+// productionLocalAdapters combines only the frozen Agent-local forward and
+// rollback mutation contracts. It is intentionally package-local in this slice.
+type productionLocalAdapters interface {
+	LocalMutationAdapter
+	LocalRollbackMutationAdapter
+}
+
 // NewProductionRecoveryArtifactCollector builds the Linux production recovery
 // collector. Unsupported operating systems fail closed in the platform-specific
 // constructor.
@@ -31,6 +38,20 @@ func NewProductionReadOnlyInspector(commandExecutor executor.CommandExecutor) (P
 		return nil, errors.New("xRocket production read-only inspector requires a command executor")
 	}
 	return newProductionReadOnlyInspector(commandExecutor)
+}
+
+// newProductionDefinitionWithLocalAdapters exists only to prove package-local
+// composition. No Agent resolver calls this constructor in this checkpoint.
+func newProductionDefinitionWithLocalAdapters(commandExecutor executor.CommandExecutor) (*Definition, error) {
+	mutator, err := newProductionMutationAdapter(commandExecutor)
+	if err != nil {
+		return nil, err
+	}
+	inspector, err := NewProductionReadOnlyInspector(commandExecutor)
+	if err != nil {
+		return nil, err
+	}
+	return NewDefinitionWithStageAdapters(commandExecutor, mutator, inspector)
 }
 
 // NewProductionRestorePointProvider composes only recovery capture and
