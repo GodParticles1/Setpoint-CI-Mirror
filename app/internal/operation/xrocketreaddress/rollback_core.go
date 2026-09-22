@@ -571,7 +571,8 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 				return operation.RollbackResult{}, errors.New("xRocket OS rollback requires a current boot_id before mutation")
 			}
 		}
-		receipt, mutationErr := definition.rollbackMutator.RestoreStage(ctx, expectation)
+		var receipt RollbackMutationReceipt
+		receipt, mutateErr = definition.rollbackMutator.RestoreStage(ctx, expectation)
 		if err := validateRollbackMutationReceipt(receipt, stageContext.spec); err != nil {
 			return operation.RollbackResult{}, err
 		}
