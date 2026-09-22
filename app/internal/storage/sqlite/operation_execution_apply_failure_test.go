@@ -253,8 +253,9 @@ func TestFailedApplyEvidenceRollsBackWithTaskWhenCheckpointWriteFails(t *testing
 
 func validFailedApplyEvidence() operation.ApplyResult {
 	return operation.ApplyResult{
-		Changed:    false,
-		Checkpoint: "apply_partial",
+		Changed:       false,
+		MutationState: operation.MutationMayHaveChanged,
+		Checkpoint:    "apply_partial",
 		State: operation.Artifact{
 			SchemaVersion: "clickhouse.apply.v1",
 			Payload:       json.RawMessage(`{"run_id":"run-c31-apply","committed":[]}`),

@@ -1090,17 +1090,17 @@ func (inspector *productionReadOnlyInspector) EtcdRecoveryState(ctx context.Cont
 	if err != nil {
 		return EtcdRecoveryObservation{}, err
 	}
-	current, err := parseCurrentEtcdConfig(data)
+	current, err := parseMutationEtcdConfig(data)
 	if err != nil {
 		return EtcdRecoveryObservation{}, err
 	}
-	if current.Scheme != contract.Scheme || current.ClientPort != contract.ClientPort || current.PeerPort != contract.PeerPort {
+	if current.scheme != contract.Scheme || current.clientPort != contract.ClientPort || current.peerPort != contract.PeerPort {
 		return EtcdRecoveryObservation{}, errors.New("xRocket current etcd endpoint shape differs from the frozen rollback contract")
 	}
 	state := restoreEtcdState{
 		ConfigPath: contract.ConfigPath, EtcdctlPath: contract.EtcdctlPath, Scheme: contract.Scheme,
-		ClientAddress: current.ClientAddress, ClientPort: contract.ClientPort,
-		PeerAddress: current.PeerAddress, PeerPort: contract.PeerPort,
+		ClientAddress: current.client, ClientPort: contract.ClientPort,
+		PeerAddress: current.peer, PeerPort: contract.PeerPort,
 		MemberID: contract.MemberID, MemberCount: contract.MemberCount,
 		ServiceName: contract.ServiceName, ControlAdapter: contract.ControlAdapter,
 	}
