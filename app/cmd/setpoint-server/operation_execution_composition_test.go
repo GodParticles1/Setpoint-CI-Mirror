@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"setpoint/internal/app"
 	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/operation/xrocketreaddress"
 )
