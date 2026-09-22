@@ -319,7 +319,7 @@ type runtimeLeaseAuthority struct {
 }
 
 func (authority *runtimeLeaseAuthority) ValidateLease(ctx context.Context, taskID string, scope protocol.OperationActionScope) (operation.LockLease, error) {
-	response, err := authority.service.ValidateOperationLease(ctx, authority.agentID, taskID, scope)
+	response, err := authority.service.ValidateOperationLease(ctx, authority.agentID, taskID, protocol.OperationLeaseValidationRequest{Scope: scope})
 	return response.Lease, err
 }
 
