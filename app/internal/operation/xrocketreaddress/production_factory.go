@@ -40,8 +40,15 @@ func NewProductionReadOnlyInspector(commandExecutor executor.CommandExecutor) (P
 	return newProductionReadOnlyInspector(commandExecutor)
 }
 
-// newProductionDefinitionWithLocalAdapters exists only to prove package-local
-// composition. No Agent resolver calls this constructor in this checkpoint.
+// NewProductionDefinition composes the accepted production-local mutation,
+// rollback and inspection adapters for Agent execution. The adapters retain
+// their own bounded platform/profile/drift gates and fail closed outside them.
+func NewProductionDefinition(commandExecutor executor.CommandExecutor) (*Definition, error) {
+	return newProductionDefinitionWithLocalAdapters(commandExecutor)
+}
+
+// newProductionDefinitionWithLocalAdapters is the package-local composition
+// primitive shared by the public production constructor and focused tests.
 func newProductionDefinitionWithLocalAdapters(commandExecutor executor.CommandExecutor) (*Definition, error) {
 	mutator, err := newProductionMutationAdapter(commandExecutor)
 	if err != nil {

@@ -167,6 +167,6 @@ func newProductExecutionResolver() (*app.ProductExecutionResolver, error) {
 	return app.NewProductExecutionResolver(
 		app.ProductExecutionCapability{OperationID: sysctlrepair.ID, ApplyAvailable: true},
 		app.ProductExecutionCapability{OperationID: clickhouse.OperationID, ApplyAvailable: true},
-		app.ProductExecutionCapability{OperationID: xrocketreaddress.OperationID, ApplyAvailable: false},
+		app.ProductExecutionCapability{OperationID: xrocketreaddress.OperationID, ApplyAvailable: true},
 	)
 }

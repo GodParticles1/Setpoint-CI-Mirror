@@ -92,7 +92,7 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	xrocketReaddressDefinition, err := xrocketreaddress.NewDefinition(commandExecutor)
+	xrocketReaddressDefinition, err := xrocketreaddress.NewProductionDefinition(commandExecutor)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,15 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	executionResolver, err := agent.NewOperationExecutionResolver(sysctlAdapter, clickHouseAdapter)
+	xrocketRestoreProvider, err := xrocketreaddress.NewProductionRestorePointProvider(commandExecutor)
+	if err != nil {
+		return err
+	}
+	xrocketReaddressAdapter, err := agent.NewStaticOperationExecutionAdapter(xrocketreaddress.OperationID, xrocketReaddressDefinition, xrocketRestoreProvider)
+	if err != nil {
+		return err
+	}
+	executionResolver, err := agent.NewOperationExecutionResolver(sysctlAdapter, clickHouseAdapter, xrocketReaddressAdapter)
 	if err != nil {
 		return err
 	}

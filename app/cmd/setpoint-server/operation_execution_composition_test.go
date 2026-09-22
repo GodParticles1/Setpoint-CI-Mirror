@@ -33,8 +33,8 @@ func TestServerComposesAcceptedProductExecutionCapabilitiesAndRestartResume(t *t
 		t.Fatal(err)
 	}
 	xrocketCapability, ok := resolver.Resolve(xrocketreaddress.OperationID)
-	if !ok || xrocketCapability.ApplyAvailable || xrocketCapability.BlockCode != app.OperationExecutionUnavailableBlock {
-		t.Fatalf("xRocket product capability must remain fail-closed: ok=%v capability=%#v", ok, xrocketCapability)
+	if !ok || !xrocketCapability.ApplyAvailable || xrocketCapability.BlockCode != "" {
+		t.Fatalf("xRocket product capability must be exposed only with accepted Agent execution composition: ok=%v capability=%#v", ok, xrocketCapability)
 	}
 	clickhouseCapability, ok := resolver.Resolve(clickhouse.OperationID)
 	if !ok || !clickhouseCapability.ApplyAvailable {
