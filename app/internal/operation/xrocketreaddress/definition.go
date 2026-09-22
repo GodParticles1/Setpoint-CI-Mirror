@@ -202,7 +202,7 @@ func (definition *Definition) Apply(ctx context.Context, input operation.ApplyIn
 	}
 	result, err := definition.applyStage(ctx, input)
 	if err != nil {
-		return operation.ApplyResult{}, err
+		return result, err
 	}
 	if input.Stage != nil && input.Stage.ID == "final-slave" {
 		verification, verifyErr := definition.verifyStage(ctx, operation.VerifyInput{Runtime: input.Runtime, Plan: input.Plan, Stage: input.Stage, Apply: result})

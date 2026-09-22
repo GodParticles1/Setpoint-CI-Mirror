@@ -629,10 +629,16 @@ func mutationCommandSeen(commands []executor.Command, name string, fragments ...
 		if command.Name != name {
 			continue
 		}
-		joined := strings.Join(command.Args, " ")
 		matched := true
 		for _, fragment := range fragments {
-			if !strings.Contains(joined, fragment) {
+			found := false
+			for _, argument := range command.Args {
+				if argument == fragment {
+					found = true
+					break
+				}
+			}
+			if !found {
 				matched = false
 				break
 			}

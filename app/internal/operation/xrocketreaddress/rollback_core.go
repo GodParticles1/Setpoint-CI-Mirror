@@ -542,6 +542,7 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 	}
 	mutationPerformed := false
 	var adapterReceipt *RollbackMutationReceipt
+	var mutateErr error
 	if stageContext.spec.Writes && input.Apply.Changed {
 		if input.Lease == nil {
 			return operation.RollbackResult{}, errors.New("xRocket mutating rollback stage requires an authoritative lease")
@@ -579,7 +580,6 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 		}
 		mutationPerformed = receipt.State != MutationNotStarted
 		adapterReceipt = &receipt
-		err = mutationErr
 	}
 	recoveryDigest, err := recoveryContractDigest(*stageContext.manifest.Recovery)
 	if err != nil {
@@ -606,7 +606,7 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 		MutationPerformed:      mutationPerformed,
 		Expectation:            expectation,
 		AdapterReceipt:         adapterReceipt,
-		Failed:                 err != nil,
+		Failed:                 mutateErr != nil,
 	}
 	if applyReceipt.RestoreManifestSHA256 != receipt.RestoreManifestSHA256 {
 		return operation.RollbackResult{}, errors.New("xRocket rollback RestorePoint digest differs from accepted Apply evidence")
@@ -626,11 +626,11 @@ func (definition *Definition) rollbackStage(ctx context.Context, input operation
 	if adapterReceipt != nil {
 		mutationState = adapterReceipt.State
 	}
-	result := operation.RollbackResult{Restored: err == nil, MutationState: mutationState, Checkpoint: checkpoint, State: artifact, Evidence: evidence}
-	if err == nil && expectation.OS != nil && adapterReceipt != nil && adapterReceipt.State == MutationChanged {
+	result := operation.RollbackResult{Restored: mutateErr == nil, MutationState: mutationState, Checkpoint: checkpoint, State: artifact, Evidence: evidence}
+	if mutateErr == nil && expectation.OS != nil && adapterReceipt != nil && adapterReceipt.State == MutationChanged {
 		result.Reconnect = &operation.ReconnectHandoff{Barrier: operation.StageBarrierAgentReconnect, Reboot: true, BootIDBefore: adapterReceipt.BootIDBeforeRollback}
 	}
-	return result, err
+	return result, mutateErr
 }
 
 func (definition *Definition) validateRollbackInput(input operation.RollbackInput) (executionStageContext, applyStageReceipt, rollbackStageExpectation, error) {
