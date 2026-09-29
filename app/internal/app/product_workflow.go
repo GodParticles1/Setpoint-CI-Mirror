@@ -610,40 +610,26 @@ func (service *ProductOperations) continueOperationRun(ctx context.Context, runI
 	}
 	action := resource.Spec.OperationExecution.Action
 	contract := resource.Spec.OperationExecution
-	forwardReconnectCheckpoint := stageCheckpoint(run, contract.StageIndex, "reconnect_wait")
-	rollbackReconnectCheckpoint := stageCheckpoint(run, contract.StageIndex, "rollback_reconnect_wait")
-	if run.Status.Checkpoint != stagedActionResultCheckpoint(*contract, resource.Status.Phase) && run.Status.Checkpoint != forwardReconnectCheckpoint && run.Status.Checkpoint != rollbackReconnectCheckpoint {
+	if run.Status.Checkpoint != stagedActionResultCheckpoint(*contract, resource.Status.Phase) && run.Status.Checkpoint != stageCheckpoint(run, contract.StageIndex, "reconnect_wait") {
 		return nil
 	}
 	stageIndex := contract.StageIndex
 	if run.Status.Recovery != nil && run.Status.Recovery.Code == operationrun.RecoveryCancellationRequested && action == task.OperationActionCreateRestorePoint {
 		return service.continueContainedCancellation(ctx, run, resource.Metadata.ID, stageIndex)
 	}
-	if run.Status.Checkpoint == forwardReconnectCheckpoint || run.Status.Checkpoint == rollbackReconnectCheckpoint {
+	if run.Status.Checkpoint == stageCheckpoint(run, stageIndex, "reconnect_wait") {
 		facts, factErr := stageExecutionFacts(run, stageIndex)
 		if factErr != nil {
 			return factErr
 		}
-		barrierAt := facts.ApplyAt
-		nextAction := task.OperationActionVerify
-		nextState := operation.StateVerifying
-		nextCheckpoint := "verify_queued"
-		missingEvidence := "reconnect barrier lacks durable Apply terminal evidence"
-		if run.Status.Checkpoint == rollbackReconnectCheckpoint {
-			barrierAt = facts.RollbackAt
-			nextAction = task.OperationActionVerifyRollback
-			nextState = operation.StateRollingBack
-			nextCheckpoint = "verify_rollback_queued"
-			missingEvidence = "rollback reconnect barrier lacks durable Rollback terminal evidence"
-		}
-		if barrierAt.IsZero() {
-			return errors.New(missingEvidence)
+		if facts.ApplyAt.IsZero() {
+			return errors.New("reconnect barrier lacks durable Apply terminal evidence")
 		}
 		node, observeErr := service.base.nodes.GetNode(ctx, contract.Stage.ExecutorNodeID, service.base.offlineAfter)
-		if observeErr != nil || node.ID != contract.Stage.ExecutorNodeID || !node.LastSeenAt.After(barrierAt) {
+		if observeErr != nil || !node.LastSeenAt.After(facts.ApplyAt) {
 			return nil
 		}
-		_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, nextAction, nextState, nextCheckpoint)
+		_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, task.OperationActionVerify, operation.StateVerifying, "verify_queued")
 		return err
 	}
 
@@ -706,11 +692,7 @@ func (service *ProductOperations) continueOperationRun(ctx context.Context, runI
 			}
 		}
 	case task.OperationActionRollback:
-		if contract.Stage.Barrier == operation.StageBarrierAgentReconnect {
-			_, err = service.advance(ctx, run, operation.StateRollingBack, stageCheckpoint(run, stageIndex, "rollback_reconnect_wait"), "waiting for the same persistent Agent identity after rollback reconnect barrier", nil)
-		} else {
-			_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, task.OperationActionVerifyRollback, operation.StateRollingBack, "verify_rollback_queued")
-		}
+		_, err = service.queueAction(ctx, run, resource.Metadata.ID, stageIndex, task.OperationActionVerifyRollback, operation.StateRollingBack, "verify_rollback_queued")
 	case task.OperationActionVerifyRollback:
 		if previous, ok := previousAppliedStage(run, stageIndex); ok {
 			_, err = service.queueAction(ctx, run, resource.Metadata.ID, previous, task.OperationActionRollback, operation.StateRollingBack, "rollback_queued")

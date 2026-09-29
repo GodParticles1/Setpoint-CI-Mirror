@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"setpoint/internal/agent"
+	"setpoint/internal/deploymenttopology/production"
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
@@ -153,6 +154,13 @@ func run(args []string, logger *slog.Logger) error {
 	taskWorker, err := agent.NewTaskWorkerWithControlledOperations(
 		client, agentID, runtime.GOOS, registry, operationRegistry, executionRunner, commandExecutor, journal, config.CommandTimeout)
 	if err != nil {
+		return err
+	}
+	topologyRegistry, err := production.NewRegistry()
+	if err != nil {
+		return err
+	}
+	if err := taskWorker.SetTopologyProviderRegistry(topologyRegistry); err != nil {
 		return err
 	}
 	runner, err := agent.NewRunner(config, client, taskWorker, agentID, version, systemInfo, logger)

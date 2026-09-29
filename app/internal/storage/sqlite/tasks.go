@@ -468,6 +468,12 @@ func loadTaskResult(ctx context.Context, source taskResultQueryer, resource *tas
 			return fmt.Errorf("decode operation execution task result: %w", err)
 		}
 		resource.OperationExecutionResult = &result
+	case task.KindDeploymentTopologyDiscoveryTask:
+		var result task.DeploymentTopologyResult
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			return fmt.Errorf("decode deployment topology task result: %w", err)
+		}
+		resource.DeploymentTopologyResult = &result
 	default:
 		return fmt.Errorf("decode result for unsupported task kind %q", resource.Kind)
 	}
@@ -560,13 +566,13 @@ func encodeTaskExecution(spec task.Spec) (string, string, error) {
 func encodeTaskSubmission(resource task.Resource, submission task.ResultSubmission) ([]byte, *task.Failure, error) {
 	switch resource.Kind {
 	case task.KindReadOnlyCheckTask:
-		if submission.Result == nil || submission.OperationResult != nil || submission.OperationExecutionResult != nil {
+		if submission.Result == nil || submission.OperationResult != nil || submission.OperationExecutionResult != nil || submission.DeploymentTopologyResult != nil {
 			return nil, nil, errors.New("check task requires exactly one check result")
 		}
 		encoded, err := json.Marshal(submission.Result)
 		return encoded, submission.Result.Error, err
 	case task.KindOperationPlanningTask:
-		if submission.OperationResult == nil || submission.Result != nil || submission.OperationExecutionResult != nil {
+		if submission.OperationResult == nil || submission.Result != nil || submission.OperationExecutionResult != nil || submission.DeploymentTopologyResult != nil {
 			return nil, nil, errors.New("operation planning task requires exactly one operation result")
 		}
 		encoded, err := json.Marshal(submission.OperationResult)
@@ -576,11 +582,17 @@ func encodeTaskSubmission(resource task.Resource, submission task.ResultSubmissi
 		}
 		return encoded, failure, err
 	case task.KindOperationExecutionTask:
-		if submission.OperationExecutionResult == nil || submission.Result != nil || submission.OperationResult != nil {
+		if submission.OperationExecutionResult == nil || submission.Result != nil || submission.OperationResult != nil || submission.DeploymentTopologyResult != nil {
 			return nil, nil, errors.New("operation execution task requires exactly one operation execution result")
 		}
 		encoded, err := json.Marshal(submission.OperationExecutionResult)
 		return encoded, submission.OperationExecutionResult.Error, err
+	case task.KindDeploymentTopologyDiscoveryTask:
+		if submission.DeploymentTopologyResult == nil || submission.Result != nil || submission.OperationResult != nil || submission.OperationExecutionResult != nil {
+			return nil, nil, errors.New("deployment topology task requires exactly one deployment topology result")
+		}
+		encoded, err := json.Marshal(submission.DeploymentTopologyResult)
+		return encoded, submission.DeploymentTopologyResult.Error, err
 	default:
 		return nil, nil, fmt.Errorf("unsupported task kind %q", resource.Kind)
 	}

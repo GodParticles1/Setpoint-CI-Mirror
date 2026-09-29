@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"setpoint/internal/deploymenttopology"
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
 	"setpoint/internal/plugin"
@@ -42,6 +43,7 @@ type TaskWorker struct {
 	agentID        string
 	system         string
 	registry       *plugin.CheckRegistry
+	topology       *deploymenttopology.ProviderRegistry
 	operations     *operation.Registry
 	execution      OperationExecutionRunner
 	executor       executor.CommandExecutor
@@ -78,7 +80,22 @@ func newTaskWorker(remote TaskRemote, agentID, system string, registry *plugin.C
 	if commandTimeout <= 0 {
 		return nil, errors.New("task command timeout must be positive")
 	}
-	return &TaskWorker{remote: remote, agentID: agentID, system: system, registry: registry, operations: operations, execution: execution, executor: commandExecutor, journal: journal, commandTimeout: commandTimeout, now: time.Now}, nil
+	topology, err := deploymenttopology.NewProviderRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return &TaskWorker{remote: remote, agentID: agentID, system: system, registry: registry, topology: topology, operations: operations, execution: execution, executor: commandExecutor, journal: journal, commandTimeout: commandTimeout, now: time.Now}, nil
+}
+
+// SetTopologyProviderRegistry replaces the local, bounded provider registry.
+// Providers are injected by Agent composition/tests; topology tasks never carry
+// arbitrary commands, filesystem paths, peer addresses, or SSH instructions.
+func (worker *TaskWorker) SetTopologyProviderRegistry(registry *deploymenttopology.ProviderRegistry) error {
+	if registry == nil {
+		return errors.New("topology provider registry is required")
+	}
+	worker.topology = registry
+	return nil
 }
 
 func (worker *TaskWorker) ProcessOne(ctx context.Context) error {
@@ -156,6 +173,8 @@ func (worker *TaskWorker) executeClaimed(ctx context.Context, entry taskJournalE
 			phase = task.PhaseFailed
 		}
 		return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, Result: &result})
+	case task.KindDeploymentTopologyDiscoveryTask:
+		return worker.executeDeploymentTopology(ctx, executionContext, resource)
 	case task.KindOperationPlanningTask:
 		return worker.executeOperationPlanning(ctx, executionContext, resource)
 	case task.KindOperationExecutionTask:
@@ -163,6 +182,19 @@ func (worker *TaskWorker) executeClaimed(ctx context.Context, entry taskJournalE
 	default:
 		return &fatalTaskError{err: fmt.Errorf("task %s has unsupported kind %q", resource.Metadata.ID, resource.Kind)}
 	}
+}
+
+func (worker *TaskWorker) executeDeploymentTopology(ctx, executionContext context.Context, resource task.Resource) error {
+	started := worker.now().UTC()
+	resolved, err := worker.topology.Discover(executionContext)
+	completed := worker.now().UTC()
+	if err != nil {
+		fallback, _ := deploymenttopology.Resolve(nil)
+		result := task.DeploymentTopologyResult{StartedAt: started, CompletedAt: completed, Topology: fallback, Error: &task.Failure{Code: "topology_discovery_failed", Message: err.Error()}}
+		return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseFailed, DeploymentTopologyResult: &result})
+	}
+	result := task.DeploymentTopologyResult{StartedAt: started, CompletedAt: completed, Topology: resolved}
+	return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseSucceeded, DeploymentTopologyResult: &result})
 }
 
 func (worker *TaskWorker) executeOperationPlanning(ctx, executionContext context.Context, resource task.Resource) error {
@@ -256,6 +288,9 @@ func (worker *TaskWorker) failureResult(pluginID, pluginVersion, code, message s
 }
 
 func (worker *TaskWorker) interruptedSubmission(resource task.Resource) task.ResultSubmission {
+	if resource.Kind == task.KindDeploymentTopologyDiscoveryTask {
+		return worker.topologyTerminalSubmission(resource, task.PhaseFailed, "agent_execution_interrupted", "Agent stopped after topology discovery began; discovery was not run again")
+	}
 	if resource.Kind == task.KindOperationPlanningTask {
 		return worker.operationTerminalSubmission(resource, task.PhaseFailed, operation.StateInterrupted, "agent_execution_interrupted", "Agent stopped after planning began; task was not run again")
 	}
@@ -268,6 +303,9 @@ func (worker *TaskWorker) interruptedSubmission(resource task.Resource) task.Res
 }
 
 func (worker *TaskWorker) canceledSubmission(resource task.Resource) task.ResultSubmission {
+	if resource.Kind == task.KindDeploymentTopologyDiscoveryTask {
+		return worker.topologyTerminalSubmission(resource, task.PhaseCanceled, "task_canceled", "deployment topology discovery was canceled before completion")
+	}
 	if resource.Kind == task.KindOperationPlanningTask {
 		return worker.operationTerminalSubmission(resource, task.PhaseCanceled, operation.StateCanceledBeforeApply, "task_canceled", "operation planning was canceled before Apply")
 	}
@@ -277,6 +315,13 @@ func (worker *TaskWorker) canceledSubmission(resource task.Resource) task.Result
 	now := worker.now().UTC()
 	pluginID, pluginVersion := worker.taskPluginIdentity(resource)
 	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: task.PhaseCanceled, Result: &task.CheckResult{PluginID: pluginID, PluginVersion: pluginVersion, State: task.CheckError, StartedAt: now, CompletedAt: now, Items: []task.CheckItem{}, Error: &task.Failure{Code: "task_canceled", Message: "task was canceled before plugin execution"}}}
+}
+
+func (worker *TaskWorker) topologyTerminalSubmission(resource task.Resource, phase task.Phase, code, message string) task.ResultSubmission {
+	now := worker.now().UTC()
+	resolved, _ := deploymenttopology.Resolve(nil)
+	result := task.DeploymentTopologyResult{StartedAt: now, CompletedAt: now, Topology: resolved, Error: &task.Failure{Code: code, Message: message}}
+	return task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, DeploymentTopologyResult: &result}
 }
 
 func (worker *TaskWorker) executionFailureSubmission(resource task.Resource, code string, err error) task.ResultSubmission {

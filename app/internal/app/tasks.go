@@ -154,6 +154,8 @@ func (service *Service) validateSubmittedTaskResult(existing task.Resource, subm
 			contract = replayResultContract(*existing.Result)
 		}
 		return validateTaskResult(submission, contract)
+	case task.KindDeploymentTopologyDiscoveryTask:
+		return validateDeploymentTopologyTaskResult(existing, submission)
 	case task.KindOperationPlanningTask:
 		return validateOperationPlanningResult(existing, submission)
 	default:

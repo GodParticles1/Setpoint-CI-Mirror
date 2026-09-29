@@ -13,11 +13,11 @@ func TestSchemaV16ToV17AddsDurableBatchConfirmationReceipts(t *testing.T) {
 	seedHistoricalSchema(t, ctx, path, 16)
 	store, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("migrate v16 to v17: %v", err)
+		t.Fatalf("migrate v16 through current schema: %v", err)
 	}
 	defer store.Close()
 	var version string
-	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != "17" {
+	if err := store.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='schema_version'`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("version=%q err=%v", version, err)
 	}
 	assertTableExists(t, ctx, store.db, "operation_batch_confirmations")

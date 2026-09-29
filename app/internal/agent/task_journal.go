@@ -140,6 +140,12 @@ func validateJournalEntry(entry taskJournalEntry) error {
 				return fmt.Errorf("check task journal contract: %w", err)
 			}
 		}
+	case task.KindDeploymentTopologyDiscoveryTask:
+		if entry.Task.Spec.PluginID != "" || entry.Task.Spec.Execution != nil || entry.Task.Spec.OperationExecution != nil ||
+			entry.Task.Spec.ContractDigest != "" || entry.Task.Spec.OperationID != "" || entry.Task.Spec.OperationVersion != "" ||
+			entry.Task.Spec.CapabilityDigest != "" || len(entry.Task.Spec.Targets) != 0 || len(entry.Task.Spec.SecretRefs) != 0 {
+			return errors.New("deployment topology task journal has an invalid execution identity")
+		}
 	case task.KindOperationPlanningTask:
 		if entry.Task.Spec.PluginID != "" || entry.Task.Spec.Execution != nil || entry.Task.Spec.ContractDigest != "" ||
 			entry.Task.Spec.OperationID == "" || entry.Task.Spec.OperationVersion == "" || entry.Task.Spec.CapabilityDigest == "" {

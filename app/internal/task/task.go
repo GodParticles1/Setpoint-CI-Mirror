@@ -82,6 +82,7 @@ type Resource struct {
 	Result                   *CheckResult              `json:"result,omitempty"`
 	OperationResult          *operation.PlanningResult `json:"operation_result,omitempty"`
 	OperationExecutionResult *OperationExecutionResult `json:"operation_execution_result,omitempty"`
+	DeploymentTopologyResult *DeploymentTopologyResult `json:"deployment_topology_result,omitempty"`
 }
 
 type CheckState string
@@ -199,6 +200,7 @@ type ResultSubmission struct {
 	Result                   *CheckResult              `json:"result,omitempty"`
 	OperationResult          *operation.PlanningResult `json:"operation_result,omitempty"`
 	OperationExecutionResult *OperationExecutionResult `json:"operation_execution_result,omitempty"`
+	DeploymentTopologyResult *DeploymentTopologyResult `json:"deployment_topology_result,omitempty"`
 }
 
 func NewID() (string, error) {
@@ -255,6 +257,12 @@ func Clone(resource Resource) Resource {
 		var result OperationExecutionResult
 		_ = json.Unmarshal(encoded, &result)
 		resource.OperationExecutionResult = &result
+	}
+	if resource.DeploymentTopologyResult != nil {
+		encoded, _ := json.Marshal(resource.DeploymentTopologyResult)
+		var result DeploymentTopologyResult
+		_ = json.Unmarshal(encoded, &result)
+		resource.DeploymentTopologyResult = &result
 	}
 	return resource
 }
