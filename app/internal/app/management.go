@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"setpoint/internal/buildinfo"
 	"setpoint/internal/checkrun"
 	"setpoint/internal/domain"
 	"setpoint/internal/plugin"
@@ -50,10 +51,11 @@ type DashboardSummary struct {
 }
 
 type RuntimeSettings struct {
-	OfflineAfter       string `json:"offline_after"`
-	MinimumRefresh     string `json:"minimum_refresh_interval"`
-	RecommendedRefresh string `json:"recommended_refresh_interval"`
-	MaximumRunTasks    int    `json:"maximum_run_tasks"`
+	BuildIdentity      buildinfo.Identity `json:"build_identity"`
+	OfflineAfter       string             `json:"offline_after"`
+	MinimumRefresh     string             `json:"minimum_refresh_interval"`
+	RecommendedRefresh string             `json:"recommended_refresh_interval"`
+	MaximumRunTasks    int                `json:"maximum_run_tasks"`
 }
 
 func (service *Service) CreateSite(ctx context.Context, request protocol.CreateSiteRequest) (domain.Site, bool, error) {
@@ -302,7 +304,8 @@ func (service *Service) Dashboard(ctx context.Context) (DashboardSummary, error)
 
 func (service *Service) Settings() RuntimeSettings {
 	return RuntimeSettings{
-		OfflineAfter: service.offlineAfter.String(), MinimumRefresh: "2s",
+		BuildIdentity: buildinfo.Current(),
+		OfflineAfter:  service.offlineAfter.String(), MinimumRefresh: "2s",
 		RecommendedRefresh: "5s", MaximumRunTasks: maximumRunTasks,
 	}
 }

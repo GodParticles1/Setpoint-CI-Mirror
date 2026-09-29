@@ -2,29 +2,28 @@
 set -euo pipefail
 
 VERSION="${SETPOINT_VERSION:-}"
-OUT_DIR="${1:-dist/setpoint-windows-amd64}"
+OUT_DIR="${1:-.cache/windows-server-distribution}"
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ -z "$VERSION" ]; then
-  echo "SETPOINT_VERSION is required" >&2
-  exit 2
-fi
-
-if [ -d "$OUT_DIR" ] && [ -n "$(find "$OUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-  echo "output directory must be empty: $OUT_DIR" >&2
-  exit 2
-fi
+source "$APP_ROOT/scripts/package-identity.sh"
+# Validate source before creating package artifacts.
+(cd "$APP_ROOT"; resolve_package_identity)
+require_empty_package_directory "$OUT_DIR"
 
 mkdir -p "$OUT_DIR" "$OUT_DIR/agents" "$OUT_DIR/logs" "$OUT_DIR/data"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 (
   cd "$APP_ROOT"
+  resolve_package_identity
   GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-    go build -trimpath \
-      -ldflags "-s -w -X main.version=$VERSION" \
+    go build -buildvcs=false -trimpath \
+      -ldflags "$BUILD_LDFLAGS" \
       -o "$OUT_DIR/setpoint-server.exe" \
       ./cmd/setpoint-server
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+    go build -buildvcs=false -trimpath -ldflags "$BUILD_LDFLAGS" -o "$OUT_DIR/setpoint-agent.exe" ./cmd/setpoint-agent
+  printf '%s\n' "$SOURCE_SHA" > "$OUT_DIR/SOURCE_SHA"
   SETPOINT_VERSION="$VERSION" bash scripts/package-agent-distribution.sh "$OUT_DIR/agents"
 )
 
@@ -36,5 +35,5 @@ printf '%s\n' "$VERSION" > "$OUT_DIR/VERSION"
 
 (
   cd "$OUT_DIR"
-  sha256sum setpoint-server.exe start.bat stop.bat start.ps1 stop.ps1 > SHA256SUMS
+  sha256sum -b setpoint-server.exe setpoint-agent.exe start.bat stop.bat start.ps1 stop.ps1 VERSION SOURCE_SHA agents/VERSION agents/SOURCE_SHA agents/SHA256SUMS agents/setpoint-agent-linux-amd64 agents/setpoint-agent-linux-arm64 > SHA256SUMS
 )

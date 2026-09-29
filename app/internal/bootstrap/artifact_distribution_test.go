@@ -3,8 +3,11 @@ package bootstrap
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -36,12 +39,25 @@ func TestPackagedAgentDistribution(t *testing.T) {
 		if len(fields) != 2 {
 			t.Fatalf("invalid SHA256SUMS row %q", scanner.Text())
 		}
-		expected[fields[1]] = fields[0]
+		expected[strings.TrimPrefix(fields[1], "*")] = fields[0]
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scan SHA256SUMS: %v", err)
 	}
 
+	for _, name := range []string{"VERSION", "SOURCE_SHA"} {
+		data, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "SOURCE_SHA" && !regexp.MustCompile(`^[0-9a-f]{40}\n$`).Match(data) {
+			t.Fatal("invalid packaged source SHA")
+		}
+		sum := sha256.Sum256(data)
+		if expected[name] != hex.EncodeToString(sum[:]) {
+			t.Fatalf("provenance checksum mismatch: %s", name)
+		}
+	}
 	provider, err := NewDirectoryArtifactProvider(directory, version)
 	if err != nil {
 		t.Fatal(err)

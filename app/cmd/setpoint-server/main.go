@@ -13,6 +13,7 @@ import (
 	"setpoint/internal/api"
 	"setpoint/internal/app"
 	"setpoint/internal/bootstrap"
+	"setpoint/internal/buildinfo"
 	"setpoint/internal/operation"
 	"setpoint/internal/operation/clickhouse"
 	"setpoint/internal/operation/sysctlrepair"
@@ -24,8 +25,6 @@ import (
 	"setpoint/internal/webui"
 )
 
-var version = "dev"
-
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(logger); err != nil {
@@ -35,9 +34,14 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	printVersion := flag.Bool("version", false, "print build identity and exit")
 	configPath := flag.String("config", "", "path to optional JSON configuration")
 	developmentChecks := flag.Bool("development-checks", false, "register development-only check metadata")
 	flag.Parse()
+	if *printVersion {
+		fmt.Println("setpoint-server " + buildinfo.Current().String())
+		return nil
+	}
 
 	config, err := server.LoadConfig(*configPath)
 	if err != nil {
@@ -112,7 +116,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	artifactProvider, err := bootstrap.NewDirectoryArtifactProvider(config.AgentArtifactsDirectory, version)
+	artifactProvider, err := bootstrap.NewDirectoryArtifactProvider(config.AgentArtifactsDirectory, buildinfo.Version)
 	if err != nil {
 		return err
 	}

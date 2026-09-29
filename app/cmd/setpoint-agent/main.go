@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"setpoint/internal/agent"
+	"setpoint/internal/buildinfo"
 	"setpoint/internal/deploymenttopology/production"
 	"setpoint/internal/executor"
 	"setpoint/internal/operation"
@@ -24,8 +26,6 @@ import (
 	"setpoint/internal/plugins"
 	"setpoint/internal/protocol"
 )
-
-var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -39,10 +39,15 @@ func run(args []string, logger *slog.Logger) error {
 	if len(args) > 0 && args[0] == "runtime-probe" {
 		return runRuntimeProbe(args[1:])
 	}
+	printVersion := flag.Bool("version", false, "print build identity and exit")
 	configPath := flag.String("config", "", "path to optional JSON configuration")
 	rotateCredential := flag.Bool("rotate-credential", false, "rotate the enrolled Agent credential and exit")
 	if err := flag.CommandLine.Parse(args); err != nil {
 		return err
+	}
+	if *printVersion {
+		fmt.Println("setpoint-agent " + buildinfo.Current().String())
+		return nil
 	}
 	config, err := agent.LoadConfig(*configPath)
 	if err != nil {
@@ -70,7 +75,7 @@ func run(args []string, logger *slog.Logger) error {
 	if *rotateCredential {
 		return agent.RotateAndPersistCredential(context.Background(), config, client, protocol.RegistrationRequest{
 			AgentID: agentID, Hostname: systemInfo.Hostname, OS: systemInfo.OS,
-			OSVersion: systemInfo.OSVersion, Arch: systemInfo.Arch, AgentVersion: version,
+			OSVersion: systemInfo.OSVersion, Arch: systemInfo.Arch, AgentVersion: buildinfo.Version,
 		})
 	}
 	registry := plugin.NewCheckRegistry()
@@ -163,7 +168,7 @@ func run(args []string, logger *slog.Logger) error {
 	if err := taskWorker.SetTopologyProviderRegistry(topologyRegistry); err != nil {
 		return err
 	}
-	runner, err := agent.NewRunner(config, client, taskWorker, agentID, version, systemInfo, logger)
+	runner, err := agent.NewRunner(config, client, taskWorker, agentID, buildinfo.Version, systemInfo, logger)
 	if err != nil {
 		return err
 	}
