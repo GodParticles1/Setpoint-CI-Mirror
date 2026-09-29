@@ -15,17 +15,15 @@ func TestAgentComposesOperationExecutionAdaptersAndFailClosedXRocketDiscovery(t 
 	for _, required := range []string{
 		"agent.NewStaticOperationExecutionAdapter(sysctlrepair.ID",
 		"agent.NewClickHouseOperationExecutionAdapter(",
-		"agent.NewOperationExecutionResolver(sysctlAdapter, clickHouseAdapter, xrocketReaddressAdapter)",
-		"xrocketreaddress.NewProductionDefinition(commandExecutor)",
-		"xrocketreaddress.NewProductionRestorePointProvider(commandExecutor)",
-		"agent.NewStaticOperationExecutionAdapter(xrocketreaddress.OperationID, xrocketReaddressDefinition, xrocketRestoreProvider)",
+		"agent.NewOperationExecutionResolver(sysctlAdapter, clickHouseAdapter)",
+		"xrocketreaddress.NewDefinition(commandExecutor)",
 		"operationRegistry.Register(xrocketReaddressDefinition)",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("Agent product execution composition is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"sysctlrepair.NewDefinitionFactory", "enable_apply", "xrocketreaddress.NewDefinition(commandExecutor)"} {
+	for _, forbidden := range []string{"sysctlrepair.NewDefinitionFactory", "enable_apply", "xrocketReaddressAdapter"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("Agent composition retains forbidden wiring %q", forbidden)
 		}

@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 
-	"setpoint/internal/operation"
 	"setpoint/internal/task"
 )
 
@@ -17,9 +16,8 @@ type journalState string
 
 const (
 	journalClaimed   journalState = "claimed"
-	journalExecuting    journalState = "executing"
-	journalReconnecting journalState = "reconnecting"
-	journalCompleted    journalState = "completed"
+	journalExecuting journalState = "executing"
+	journalCompleted journalState = "completed"
 )
 
 type taskJournalEntry struct {
@@ -162,17 +160,6 @@ func validateJournalEntry(entry taskJournalEntry) error {
 	case journalClaimed, journalExecuting:
 		if entry.Submission != nil {
 			return errors.New("unfinished task journal must not contain a submission")
-		}
-	case journalReconnecting:
-		if entry.Task.Kind != task.KindOperationExecutionTask || entry.Submission == nil || entry.Submission.Phase != task.PhaseSucceeded || entry.Submission.ClaimID != entry.Task.Status.ClaimID || entry.Submission.OperationExecutionResult == nil {
-			return errors.New("reconnecting task journal requires one cached operation execution result")
-		}
-		handoff, err := reconnectHandoff(entry.Submission)
-		if err != nil {
-			return fmt.Errorf("reconnecting task journal: %w", err)
-		}
-		if handoff.Barrier != operation.StageBarrierAgentReconnect || !handoff.Reboot || strings.TrimSpace(handoff.BootIDBefore) == "" || handoff.BootIDAfter != "" {
-			return errors.New("reconnecting task journal has an invalid reboot handoff")
 		}
 	case journalCompleted:
 		if entry.Submission == nil || entry.Submission.ClaimID != entry.Task.Status.ClaimID {

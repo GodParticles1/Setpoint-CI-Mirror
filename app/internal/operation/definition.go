@@ -128,28 +128,11 @@ type Impact struct {
 	EstimatedDataChange int64         `json:"estimated_data_change_bytes"`
 }
 
-type MutationState string
-
-const (
-	MutationNotStarted     MutationState = "NOT_STARTED"
-	MutationChanged        MutationState = "CHANGED"
-	MutationMayHaveChanged MutationState = "MAY_HAVE_CHANGED"
-)
-
-type ReconnectHandoff struct {
-	Barrier      StageBarrier `json:"barrier"`
-	Reboot       bool         `json:"reboot"`
-	BootIDBefore string       `json:"boot_id_before"`
-	BootIDAfter  string       `json:"boot_id_after,omitempty"`
-}
-
 type ApplyResult struct {
-	Changed       bool              `json:"changed"`
-	MutationState MutationState     `json:"mutation_state,omitempty"`
-	Checkpoint    string            `json:"checkpoint"`
-	State      Artifact          `json:"state"`
-	Evidence   []EvidenceRef     `json:"evidence,omitempty"`
-	Reconnect  *ReconnectHandoff `json:"reconnect,omitempty"`
+	Changed    bool          `json:"changed"`
+	Checkpoint string        `json:"checkpoint"`
+	State      Artifact      `json:"state"`
+	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 }
 
 type Verification struct {
@@ -160,12 +143,10 @@ type Verification struct {
 }
 
 type RollbackResult struct {
-	Restored      bool              `json:"restored"`
-	MutationState MutationState     `json:"mutation_state,omitempty"`
-	Checkpoint    string            `json:"checkpoint"`
-	State      Artifact          `json:"state"`
-	Evidence   []EvidenceRef     `json:"evidence,omitempty"`
-	Reconnect  *ReconnectHandoff `json:"reconnect,omitempty"`
+	Restored   bool          `json:"restored"`
+	Checkpoint string        `json:"checkpoint"`
+	State      Artifact      `json:"state"`
+	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 }
 
 type DiscoverInput struct{ Runtime RuntimeInput }

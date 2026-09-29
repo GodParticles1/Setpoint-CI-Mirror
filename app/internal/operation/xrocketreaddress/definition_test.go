@@ -54,10 +54,8 @@ func missingResult() (executor.Result, error) {
 func validKeepalived() string {
 	return `
 vrrp_instance VI_1 {
-    state BACKUP
+    state MASTER
     interface eth0
-    priority 100
-    nopreempt
     unicast_src_ip 192.0.2.10
     unicast_peer {
         192.0.2.11
@@ -65,14 +63,11 @@ vrrp_instance VI_1 {
     virtual_ipaddress {
         192.0.2.12/24 dev eth0
     }
-}
-virtual_server 192.0.2.12 6000 {
-    delay_loop 3
 }`
 }
 
 func validParameters() []byte {
-	return []byte(`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}`)
+	return []byte(`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":24,"gateway_address":"198.51.100.1"}`)
 }
 
 func runtimeInput(commandExecutor executor.CommandExecutor) operation.RuntimeInput {
@@ -102,14 +97,11 @@ func TestDiscoverCorrelatesNetworkKeepalivedVIPAndVersionEvidence(t *testing.T) 
 	if state.PrefixLength != 24 || state.GatewayAddress != "192.0.2.1" || state.Interface != "eth0" {
 		t.Fatalf("network=%#v", state)
 	}
-	if state.ConfiguredRole != "BACKUP" || state.RuntimeRole != "active_vip_owner" || state.ProductGeneration != "V300R004C68B009" {
+	if state.ConfiguredRole != "MASTER" || state.RuntimeRole != "active_vip_owner" || state.ProductGeneration != "V300R004C68B009" {
 		t.Fatalf("role/version=%#v", state)
 	}
-	if !state.KeepalivedNopreempt || state.KeepalivedPriority != 100 || !reflect.DeepEqual(state.BusinessPorts, []int{6000}) {
-		t.Fatalf("ha=%#v", state)
-	}
 	precheck, err := definition.Precheck(context.Background(), operation.PrecheckInput{Runtime: runtimeInput(commandExecutor), Discovery: discovery})
-	if err != nil || precheck.Passed || len(precheck.Findings) != 1 || precheck.Findings[0].Code != "TWO_PARTICIPANTS_REQUIRED" {
+	if err != nil || precheck.Passed || len(precheck.Findings) != 1 || precheck.Findings[0].Code != "APPLY_MECHANISM_UNVERIFIED" {
 		t.Fatalf("precheck=%#v err=%v", precheck, err)
 	}
 	assertReadOnlyCommands(t, commandExecutor.commands)
@@ -135,7 +127,7 @@ func TestDiscoverFailsClosedWhenVersionEvidenceIsNotExact(t *testing.T) {
 	assertReadOnlyCommands(t, commandExecutor.commands)
 }
 
-func TestExecutePlanningStopsBeforeProfilerWithoutTwoParticipants(t *testing.T) {
+func TestExecutePlanningStopsAtEvidenceGapBeforePlanOrApply(t *testing.T) {
 	commandExecutor := &discoveryExecutor{versioned: true, keepalived: validKeepalived()}
 	definition, _ := NewDefinition(commandExecutor)
 	result := operation.ExecutePlanning(context.Background(), definition, runtimeInput(commandExecutor), func() time.Time {
@@ -153,10 +145,16 @@ func TestExecutePlanningStopsBeforeProfilerWithoutTwoParticipants(t *testing.T) 
 	assertReadOnlyCommands(t, commandExecutor.commands)
 }
 
-func TestDestructiveStagesRemainFailClosedUntilExecutionAdapterIsRegistered(t *testing.T) {
+func TestAllPostDiscoveryStagesFailClosedWithoutExecutingCommands(t *testing.T) {
 	commandExecutor := &discoveryExecutor{versioned: true, keepalived: validKeepalived()}
 	definition, _ := NewDefinition(commandExecutor)
 	before := len(commandExecutor.commands)
+	if _, err := definition.Plan(context.Background(), operation.PlanInput{}); !errors.Is(err, errApplyMechanismUnverified) {
+		t.Fatalf("Plan err=%v", err)
+	}
+	if _, err := definition.Impact(context.Background(), operation.ImpactInput{}); !errors.Is(err, errApplyMechanismUnverified) {
+		t.Fatalf("Impact err=%v", err)
+	}
 	if _, err := definition.Apply(context.Background(), operation.ApplyInput{}); !errors.Is(err, errApplyMechanismUnverified) {
 		t.Fatalf("Apply err=%v", err)
 	}
@@ -170,7 +168,7 @@ func TestDestructiveStagesRemainFailClosedUntilExecutionAdapterIsRegistered(t *t
 		t.Fatalf("VerifyRollback err=%v", err)
 	}
 	if len(commandExecutor.commands) != before {
-		t.Fatalf("blocked destructive stages executed commands: %#v", commandExecutor.commands[before:])
+		t.Fatalf("blocked stages executed commands: %#v", commandExecutor.commands[before:])
 	}
 }
 
@@ -179,7 +177,7 @@ func TestParameterNormalizationIsStrictAndCanonical(t *testing.T) {
 		t.Fatalf("metadata is invalid: %v", err)
 	}
 	catalog := NewCatalogDescriptor()
-	normalized, err := catalog.NormalizeParameters([]byte(`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}`))
+	normalized, err := catalog.NormalizeParameters([]byte(`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":"24","gateway_address":"198.51.100.1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,14 +185,13 @@ func TestParameterNormalizationIsStrictAndCanonical(t *testing.T) {
 	if err := json.Unmarshal(normalized, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded) != 4 || decoded["external_db_target_address"] != "203.0.113.20" {
+	if decoded["prefix_length"] != float64(24) {
 		t.Fatalf("normalized=%s", normalized)
 	}
 	invalid := []string{
-		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.10","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20"}`,
-		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"not-an-ip"}`,
-		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","external_db_target_address":"203.0.113.20","prefix_length":24}`,
-		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12"}`,
+		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.10","vip_target_address":"198.51.100.12","prefix_length":24,"gateway_address":"198.51.100.1"}`,
+		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"203.0.113.12","prefix_length":24,"gateway_address":"198.51.100.1"}`,
+		`{"master_target_address":"198.51.100.10","slave_target_address":"198.51.100.11","vip_target_address":"198.51.100.12","prefix_length":24,"gateway_address":"198.51.100.1","extra":true}`,
 	}
 	for _, raw := range invalid {
 		if _, err := catalog.NormalizeParameters([]byte(raw)); err == nil {

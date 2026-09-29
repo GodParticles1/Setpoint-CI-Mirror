@@ -14,7 +14,7 @@ import (
 	"setpoint/internal/executor"
 )
 
-const discoverySchema = "xrocket.readdress.discovery.v2"
+const discoverySchema = "xrocket.readdress.discovery.v1"
 
 var generationPattern = regexp.MustCompile(`V[0-9]{3}R[0-9]{3}C[0-9]{2}(?:_Base)?B[0-9]{3}`)
 
@@ -65,31 +65,26 @@ func (probe discoveryProbe) discover(ctx context.Context, nodeID string) (discov
 			state.ConfiguredRole = parsed.State
 			state.Interface = parsed.Interface
 			state.VIPAddress = parsed.VIPAddress
-			state.KeepalivedPriority = parsed.Priority
-			state.KeepalivedNopreempt = parsed.Nopreempt
-			state.BusinessPorts = append([]int(nil), parsed.BusinessPorts...)
-			if !parsed.Nopreempt {
-				state.Unresolved = append(state.Unresolved, "keepalived_nopreempt")
+			switch parsed.State {
+			case "MASTER":
+				state.MasterAddress, state.SlaveAddress = parsed.SourceAddress, parsed.PeerAddress
+			case "BACKUP":
+				state.MasterAddress, state.SlaveAddress = parsed.PeerAddress, parsed.SourceAddress
+			default:
+				state.Unresolved = append(state.Unresolved, "configured_master_slave_role")
 			}
-			if len(parsed.BusinessPorts) == 0 {
-				state.Unresolved = append(state.Unresolved, "keepalived_business_ports")
-			}
+			state.RuntimeRole = "standby"
 			if networkState.containsAddress(parsed.VIPAddress) {
 				state.RuntimeRole = "active_vip_owner"
-				state.MasterAddress = parsed.SourceAddress
-				state.SlaveAddress = parsed.PeerAddress
-			} else {
-				state.RuntimeRole = "standby"
-				state.Unresolved = append(state.Unresolved, "current_master_vip_owner")
 			}
 		}
 	}
-
-	expectedLocal := state.MasterAddress
-	if expectedLocal == "" && config != "" {
-		if parsed, parseErr := parseKeepalivedConfig(config); parseErr == nil {
-			expectedLocal = parsed.SourceAddress
-		}
+	expectedLocal := ""
+	switch state.ConfiguredRole {
+	case "MASTER":
+		expectedLocal = state.MasterAddress
+	case "BACKUP":
+		expectedLocal = state.SlaveAddress
 	}
 	localAddress, prefix, gateway, device, networkErr := networkState.primaryIPv4(expectedLocal)
 	if networkErr != nil {
@@ -100,11 +95,10 @@ func (probe discoveryProbe) discover(ctx context.Context, nodeID string) (discov
 		if state.Interface == "" {
 			state.Interface = device
 		}
-		if state.MasterAddress != "" && localAddress != state.MasterAddress {
+		if localAddress != state.MasterAddress && localAddress != state.SlaveAddress {
 			state.Unresolved = append(state.Unresolved, "local_address_topology_correlation")
 		}
 	}
-
 	productPath, productFound, productErr := probe.resolveProductPath(ctx)
 	if productErr != nil {
 		return discoveryState{}, productErr
