@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"setpoint/internal/remediation"
 	"testing"
 	"time"
 
 	"setpoint/internal/checkrun"
 	"setpoint/internal/plugin"
+	"setpoint/internal/remediationbindings"
 	"setpoint/internal/task"
 )
 
@@ -35,7 +38,11 @@ func TestDecorateCheckRunExposesRemediationOfferContract(t *testing.T) {
 		},
 	}}
 
-	decorated := decorateCheckRun(run, definitions)
+	bindings, err := remediationbindings.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decorated := decorateCheckRun(run, definitions, bindings)
 	if len(decorated.RemediationOffers) != 1 {
 		t.Fatalf("offers=%#v", decorated.RemediationOffers)
 	}
@@ -74,5 +81,37 @@ func TestDecorateCheckRunExposesRemediationOfferContract(t *testing.T) {
 		if _, ok := offers[0][field]; !ok {
 			t.Fatalf("offer missing %s: %s", field, payload["remediation_offers"])
 		}
+	}
+}
+
+func TestControlledRemediationAPIContract(t *testing.T) {
+	binding := remediation.Binding{CheckIDs: []string{"test.controlled"}, OperationID: "test.controlled.operation", Disposition: plugin.RemediationControlled, SupportsRollback: true, Impact: remediation.Impact{Connection: true, Business: true}, Parameters: func(item task.CheckItem) (map[string]string, error) {
+		if item.CurrentValue != "old" || item.RecommendedValue != "new" {
+			return nil, errors.New("invalid test shape")
+		}
+		return map[string]string{"setting": "new"}, nil
+	}}
+	registry, err := remediation.NewRegistry(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := []plugin.CheckMetadata{{ID: "test.controlled", Remediation: plugin.RemediationMetadata{Disposition: plugin.RemediationControlled, OperationID: binding.OperationID, Reason: "test-only reviewed operation"}}}
+	run := checkrun.Resource{Tasks: []task.Resource{{Result: &task.CheckResult{Items: []task.CheckItem{{ID: "test.controlled", Status: task.ItemUnsafe, CurrentValue: "old", RecommendedValue: "new", SupportsAutomaticFix: true, MayAffectConnection: true, MayAffectBusiness: true}}}}}}
+	decorated := decorateCheckRun(run, definitions, registry)
+	encoded, err := json.Marshal(decorated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded checkrun.Resource
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	offer := decoded.RemediationOffers[0]
+	if offer.Disposition != "CONTROLLED" || offer.Availability != "actionable" || offer.SupportsAutomaticFix || !offer.MayAffectConnection || !offer.MayAffectBusiness || offer.OperationID != binding.OperationID {
+		t.Fatalf("JSON=%s", encoded)
+	}
+	unbound := decorateCheckRun(run, definitions, nil).RemediationOffers[0]
+	if unbound.Availability != "manual_only" || unbound.SupportsAutomaticFix || unbound.OperationID != "" {
+		t.Fatalf("unbound=%#v", unbound)
 	}
 }

@@ -25,7 +25,7 @@ type RepairBatchSnapshot = {
 }
 
 const filters: Array<{ value: ResultFilter; label: string }> = [
-  { value: 'all', label: '全部' }, { value: 'actionable', label: '可自动修复' }, { value: 'manual_only', label: '仅人工处理' },
+  { value: 'all', label: '全部' }, { value: 'actionable', label: '可整改（需要确认）' }, { value: 'manual_only', label: '仅人工处理' },
   { value: 'unsafe', label: '不安全' }, { value: 'manual_review', label: '人工复核' }, { value: 'error', label: '错误' },
   { value: 'safe', label: '安全' }, { value: 'not_applicable', label: '不适用' },
 ]
@@ -133,7 +133,7 @@ export function RunDetailPage({ id, navigate }: { id: string; navigate: (path: s
     {nodeResource.error && <div className="notice-info">节点名称暂未加载，结果仍使用节点 ID 展示。</div>}
     <div className="segmented" role="group" aria-label="结果筛选">{filters.map((current) => <button key={current.value} className={filter === current.value ? 'active' : ''} onClick={() => setFilter(current.value)}>{current.label}</button>)}</div>
     <section className="section-block result-section">
-      <div className="section-heading"><div><h2>检查结果</h2><p>{actionableRows.length} 项由 Server 标记为可自动修复</p></div><div className="page-actions"><Button className="button-quiet" disabled={visible.filter(isActionable).length === 0} onClick={selectVisibleActionable}>选择当前可修复项</Button><Button className="button-quiet" disabled={selectedRepairKeys.length === 0} onClick={() => setSelectedRepairKeys([])}>清空选择</Button><Button className="button-primary" disabled={selectedRepairKeys.length === 0} onClick={() => setRepairOpen(true)}><Wrench size={15} />修复工作区 {selectedRepairKeys.length}</Button></div></div>
+      <div className="section-heading"><div><h2>检查结果</h2><p>{actionableRows.length} 项可整改，执行前需要预览并明确确认</p></div><div className="page-actions"><Button className="button-quiet" disabled={visible.filter(isActionable).length === 0} onClick={selectVisibleActionable}>选择当前可修复项</Button><Button className="button-quiet" disabled={selectedRepairKeys.length === 0} onClick={() => setSelectedRepairKeys([])}>清空选择</Button><Button className="button-primary" disabled={selectedRepairKeys.length === 0} onClick={() => setRepairOpen(true)}><Wrench size={15} />修复工作区 {selectedRepairKeys.length}</Button></div></div>
       {rows.length === 0 ? <div className="state-block state-empty">{isTerminal(run.status.phase) ? '没有可显示的检查结果' : 'Agent 正在等待或执行任务'}</div> : visible.length === 0 ? <div className="state-block state-empty">当前筛选没有结果</div> : <div className="table-wrap result-table"><table><thead><tr><th>选择</th><th>结论</th><th>节点</th><th>检查项</th><th>当前 / 建议</th><th>判断依据与下一步</th></tr></thead><tbody>
         {visible.map((row) => {
           const { task, item, offer } = row
@@ -164,7 +164,7 @@ export function RunDetailPage({ id, navigate }: { id: string; navigate: (path: s
 }
 
 function ResultSafetyFacts({ item, offer }: { item: CheckItem; offer?: RemediationOffer }) {
-  return <details><summary>修复能力与影响</summary><p>检查事实：自动修复 {item.supports_automatic_fix ? '支持' : '不支持'} · 回滚 {item.supports_rollback ? '支持' : '不支持'}</p>{offer && <><p>Server 修复能力：{offer.availability === 'actionable' ? '可执行' : '仅人工'} · 回滚：{offer.supports_rollback ? '支持' : '不支持'} · 风险：{offer.risk}</p><p>重启：{offer.requires_restart ? '需要' : '不需要'} · 连接：{offer.may_affect_connection ? '可能影响' : '无标记'} · 业务：{offer.may_affect_business ? '可能影响' : '无标记'}</p></>}</details>
+  return <details><summary>修复能力与影响</summary><p>检查事实：自动修复 {item.supports_automatic_fix ? '支持' : '不支持'} · 回滚 {item.supports_rollback ? '支持' : '不支持'}</p>{offer && <><p>Server 修复能力：{offer.availability === 'actionable' ? remediationLabel(offer) : '仅人工'} · 回滚：{offer.supports_rollback ? '支持' : '不支持'} · 风险：{offer.risk}</p><p>重启：{offer.requires_restart ? '需要' : '不需要'} · 连接：{offer.may_affect_connection ? '可能影响' : '无标记'} · 业务：{offer.may_affect_business ? '可能影响' : '无标记'}</p></>}</details>
 }
 
 function RepairWorkspace({ checkRunID, rows, serverBatch, nodeNames, onClose, onClearSelection, onRefreshCheckRun }: { checkRunID: string; rows: ResultRow[]; serverBatch?: OperationBatchConfirmationResponse; nodeNames: Map<string, string>; onClose: () => void; onClearSelection: () => void; onRefreshCheckRun: () => void }) {
@@ -439,7 +439,7 @@ function RepairItem({ row, nodeName, value, setValue, execution }: { row: Result
   if (!offer) return <section className="operation-detail"><header><h2>{row.item.name}</h2><span>仅人工</span></header><div className="notice-error">当前结果没有匹配的 Server RemediationOffer，已阻止自动修复。</div></section>
   const run = execution?.run
   return <section className="operation-detail operation-detail-wide">
-    <header><h2>{row.item.name}</h2><span>{offer.availability === 'actionable' ? '独立 OperationRun' : '仅人工'}</span></header>
+    <header><h2>{row.item.name}</h2><span>{offer.availability === 'actionable' ? remediationLabel(offer) : '仅人工'}</span></header>
     <dl className="impact-facts"><div><dt>节点</dt><dd>{nodeName}</dd></div><div><dt>当前值</dt><dd>{offer.current_value || '无'}</dd></div><div><dt>原策略建议</dt><dd>{offer.existing_recommended_value || '无'}</dd></div><div><dt>本次建议</dt><dd>{offer.recommended_value_for_this_run || '无'}</dd></div></dl>
     <p>{offer.recommendation_reason || 'Server 未提供额外建议原因。'}</p>
     {offer.availability === 'manual_only' && <div className="notice-error">{offer.block_reason || 'Server 未授权自动修复。'}</div>}
@@ -533,6 +533,10 @@ function constraintText(offer: RemediationOffer) {
   if (offer.constraints.max !== undefined) parts.push(`最大值：${offer.constraints.max}`)
   if (offer.constraints.pattern) parts.push(`格式：${offer.constraints.pattern}`)
   return parts.join('；') || 'Server 未暴露额外约束。'
+}
+
+function remediationLabel(offer: RemediationOffer) {
+  return offer.disposition === 'CONTROLLED' ? '受控整改 / 需要确认' : '自动修复 / 需要确认'
 }
 
 function isActionable(row: ResultRow) {

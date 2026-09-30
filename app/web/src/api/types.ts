@@ -136,6 +136,7 @@ export interface RemediationOffer {
   existing_recommended_value: string
   recommended_value_for_this_run: string
   recommendation_reason: string
+  disposition: 'AUTO_SAFE' | 'CONTROLLED' | 'MANUAL_ONLY' | 'NOT_APPLICABLE' | ''
   availability: RemediationAvailability
   editable: boolean
   parameter_type?: string

@@ -68,7 +68,7 @@ export function remediationOfferFixture(overrides: Partial<RemediationOffer> = {
     check_run_id: 'run-1', task_id: 'task-1', check_id: 'net.ipv4.conf.all.accept_redirects.persisted', node_id: 'node-1',
     current_value: 'runtime=1; persisted=0', existing_recommended_value: 'runtime=0; persisted=0',
     recommended_value_for_this_run: 'runtime=0; persisted=0', recommendation_reason: '运行时值偏离已验证的持久化安全值。',
-    availability: 'actionable', editable: false, parameter_type: 'string', constraints: { options: ['runtime=0; persisted=0'] },
+    disposition: 'AUTO_SAFE', availability: 'actionable', editable: false, parameter_type: 'string', constraints: { options: ['runtime=0; persisted=0'] },
     supports_automatic_fix: true, supports_rollback: true, risk: 'low', requires_restart: false,
     may_affect_connection: false, may_affect_business: false,
     operation_id: 'linux.network.icmp_redirects.runtime_repair',

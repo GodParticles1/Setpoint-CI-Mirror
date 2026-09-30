@@ -294,3 +294,27 @@ describe('pollDelay', () => {
     expect([0, 1, 2, 3, 20].map(pollDelay)).toEqual([5_000, 10_000, 20_000, 30_000, 30_000])
   })
 })
+
+
+describe('CONTROLLED remediation contract', () => {
+  it('requires preview and explicit confirmation without claiming automatic repair', async () => {
+    const item = { ...repairItem(), supports_automatic_fix: false }
+    const offer = remediationOfferFixture({ disposition: 'CONTROLLED', supports_automatic_fix: false, may_affect_connection: true, may_affect_business: true })
+    const create = vi.spyOn(api, 'createOperationRun').mockResolvedValue(independentRun('controlled-run'))
+    const confirm = vi.spyOn(api, 'confirmOperationBatch').mockImplementation(async (batchId, checkRunId) => batchResponse(batchId, checkRunId, [
+      { taskId: 'task-1', checkId: item.id, run: independentRun('controlled-run', 'creating_restore_point') },
+    ]))
+    await openRepairWorkspace(runFixture('completed', [item], [offer]))
+    expect(screen.getAllByText(/受控整改 \/ 需要确认/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('自动修复 / 需要确认')).toBeNull()
+    expect(create).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'CONFIRM ALL SELECTED REPAIR PLANS' }) as HTMLButtonElement).disabled).toBe(true)
+    await generatePreview()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(confirm).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'CONFIRM ALL SELECTED REPAIR PLANS' }))
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
+    expect(confirm.mock.calls[0][3]).toEqual([expect.objectContaining({ run_id: 'controlled-run', check_id: item.id, plan_digest: `sha256:${'b'.repeat(64)}` })])
+  })
+})

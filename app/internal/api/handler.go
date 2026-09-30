@@ -18,6 +18,8 @@ import (
 	"setpoint/internal/operationrun"
 	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
+	"setpoint/internal/remediation"
+	"setpoint/internal/remediationbindings"
 	"setpoint/internal/task"
 )
 
@@ -87,6 +89,7 @@ type Handler struct {
 	health     HealthStore
 	service    Service
 	operations OperationsService
+	bindings   *remediation.Registry
 	logger     *slog.Logger
 }
 
@@ -105,7 +108,11 @@ func newManagementHandler(health HealthStore, service Service, operations Operat
 	if health == nil || service == nil || logger == nil {
 		return nil, errors.New("health store, service and logger are required")
 	}
-	handler := &Handler{health: health, service: service, operations: operations, logger: logger}
+	bindings, err := remediationbindings.New()
+	if err != nil {
+		return nil, err
+	}
+	handler := &Handler{bindings: bindings, health: health, service: service, operations: operations, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.healthz)
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", handler.createEnrollmentToken)

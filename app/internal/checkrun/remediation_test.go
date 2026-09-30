@@ -1,14 +1,28 @@
 package checkrun
 
 import (
+	"errors"
 	"reflect"
+	"setpoint/internal/plugins"
 	"testing"
 	"time"
 
 	"setpoint/internal/plugin"
+	"setpoint/internal/remediation"
+	"setpoint/internal/remediationbindings"
 	"setpoint/internal/task"
 )
 
+const icmpRedirectRuntimeRepairOperationID = "linux.network.icmp_redirects.runtime_repair"
+
+func productionBindings(t *testing.T) *remediation.Registry {
+	t.Helper()
+	registry, err := remediationbindings.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
 func autoSafeRemediation() plugin.RemediationMetadata {
 	return plugin.RemediationMetadata{
 		Disposition: plugin.RemediationAutoSafe,
@@ -40,7 +54,7 @@ func TestBuildRemediationOffersUnboundFlagsRemainManualOnly(t *testing.T) {
 		},
 	}
 
-	offers := BuildRemediationOffers(run, remediations)
+	offers := BuildRemediationOffers(run, remediations, productionBindings(t))
 	if len(offers) != 1 {
 		t.Fatalf("offers=%#v", offers)
 	}
@@ -77,7 +91,7 @@ func TestBuildRemediationOffersBindsProvenICMPRedirectRepairAsFixedTarget(t *tes
 	run := Resource{Metadata: Metadata{ID: "run-1"}, Tasks: []task.Resource{{
 		Metadata: task.Metadata{ID: "task-1"}, Spec: task.Spec{NodeID: "node-1"}, Result: &task.CheckResult{Items: []task.CheckItem{item}},
 	}}}
-	offer := BuildRemediationOffers(run, map[string]plugin.RemediationMetadata{item.ID: autoSafeRemediation()})[0]
+	offer := BuildRemediationOffers(run, map[string]plugin.RemediationMetadata{item.ID: autoSafeRemediation()}, productionBindings(t))[0]
 	if offer.Disposition != string(plugin.RemediationAutoSafe) || offer.Availability != "actionable" || !offer.SupportsAutomaticFix || !offer.SupportsRollback {
 		t.Fatalf("offer=%#v", offer)
 	}
@@ -132,10 +146,61 @@ func TestBuildRemediationOffersFailsClosed(t *testing.T) {
 				Metadata: task.Metadata{ID: "task-1"}, Spec: task.Spec{NodeID: "node-1"},
 				Result: &task.CheckResult{Items: []task.CheckItem{item}},
 			}}}
-			offers := BuildRemediationOffers(run, test.remediations)
+			offers := BuildRemediationOffers(run, test.remediations, productionBindings(t))
 			if len(offers) != 1 || offers[0].Availability != "manual_only" || offers[0].Editable || offers[0].BlockReason != test.reason {
 				t.Fatalf("offers=%#v", offers)
 			}
 		})
+	}
+}
+
+func TestControlledOfferUsesGenericReviewedBinding(t *testing.T) {
+	item := task.CheckItem{ID: "test.controlled.setting", Status: task.ItemUnsafe, CurrentValue: "old", RecommendedValue: "new", MayAffectConnection: true, MayAffectBusiness: true, RequiresRestart: true, SupportsAutomaticFix: true}
+	binding := remediation.Binding{CheckIDs: []string{item.ID}, OperationID: "test.controlled.operation", Disposition: plugin.RemediationControlled, SupportsRollback: true, Impact: remediation.Impact{Connection: true, Business: true, Restart: true}, Parameters: func(i task.CheckItem) (map[string]string, error) {
+		if i.CurrentValue != "old" || i.RecommendedValue != "new" {
+			return nil, errors.New("invalid shape")
+		}
+		return map[string]string{"setting": "new"}, nil
+	}}
+	registry, err := remediation.NewRegistry(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[string]plugin.RemediationMetadata{item.ID: {Disposition: plugin.RemediationControlled, OperationID: binding.OperationID, Reason: "reviewed test-only operation"}}
+	run := Resource{Metadata: Metadata{ID: "run"}, Tasks: []task.Resource{{Metadata: task.Metadata{ID: "task"}, Spec: task.Spec{NodeID: "node"}, Result: &task.CheckResult{Items: []task.CheckItem{item}}}}}
+	offer := BuildRemediationOffers(run, metadata, registry)[0]
+	if offer.Availability != "actionable" || offer.SupportsAutomaticFix || !offer.SupportsRollback || offer.Disposition != "CONTROLLED" || offer.Editable || offer.OperationParameters["setting"] != "new" {
+		t.Fatalf("offer=%#v", offer)
+	}
+	for _, bindings := range []*remediation.Registry{nil, productionBindings(t)} {
+		offer = BuildRemediationOffers(run, metadata, bindings)[0]
+		if offer.Availability != "manual_only" || offer.SupportsAutomaticFix || offer.OperationID != "" {
+			t.Fatalf("unbound=%#v", offer)
+		}
+	}
+}
+
+func TestProductionCatalogFourAutoSafeAndZeroControlledActionable(t *testing.T) {
+	checks := plugin.NewCheckRegistry()
+	if err := plugins.RegisterFormal(checks); err != nil {
+		t.Fatal(err)
+	}
+	bindings := productionBindings(t)
+	counts := map[plugin.RemediationDisposition]int{}
+	for _, definition := range checks.ListDefinitions() {
+		item := task.CheckItem{ID: definition.ID, Status: task.ItemUnsafe, CurrentValue: "runtime=1; persisted=0", RecommendedValue: "runtime=0; persisted=0", SupportsAutomaticFix: true, SupportsRollback: true}
+		run := Resource{Tasks: []task.Resource{{Result: &task.CheckResult{Items: []task.CheckItem{item}}}}}
+		offer := BuildRemediationOffers(run, map[string]plugin.RemediationMetadata{item.ID: definition.Remediation}, bindings)[0]
+		counts[definition.Remediation.Disposition]++
+		if definition.Remediation.Disposition == plugin.RemediationAutoSafe {
+			if offer.Availability != "actionable" || !offer.SupportsAutomaticFix || !offer.SupportsRollback || offer.OperationParameters["check_id"] != item.ID {
+				t.Fatalf("AUTO_SAFE regression=%#v", offer)
+			}
+		} else if offer.Availability != "manual_only" || offer.SupportsAutomaticFix || offer.OperationID != "" {
+			t.Fatalf("accidental actionability=%#v", offer)
+		}
+	}
+	if counts[plugin.RemediationControlled] != 48 || counts[plugin.RemediationAutoSafe] != 4 {
+		t.Fatalf("counts=%v", counts)
 	}
 }

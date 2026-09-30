@@ -9,6 +9,9 @@ func TestValidateRemediationMetadata(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "auto_safe", value: RemediationMetadata{Disposition: RemediationAutoSafe, OperationID: "linux.network.icmp_redirects.runtime_repair", Reason: "bounded operation"}},
+		{name: "controlled_bound", value: RemediationMetadata{Disposition: RemediationControlled, OperationID: "test.controlled", Reason: "reviewed binding"}},
+		{name: "controlled_invalid_operation", value: RemediationMetadata{Disposition: RemediationControlled, OperationID: "bad id", Reason: "invalid"}, wantErr: true},
+		{name: "not_applicable_bound", value: RemediationMetadata{Disposition: RemediationNotApplicable, OperationID: "test.controlled", Reason: "invalid"}, wantErr: true},
 		{name: "controlled", value: RemediationMetadata{Disposition: RemediationControlled, Reason: "approval required"}},
 		{name: "manual_only", value: RemediationMetadata{Disposition: RemediationManualOnly, Reason: "ambiguous source"}},
 		{name: "not_applicable", value: RemediationMetadata{Disposition: RemediationNotApplicable, Reason: "observation only"}},

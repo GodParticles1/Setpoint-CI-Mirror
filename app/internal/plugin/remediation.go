@@ -33,8 +33,12 @@ func ValidateRemediationMetadata(metadata RemediationMetadata) error {
 		if !validID(operationID) {
 			return errors.New("AUTO_SAFE remediation requires a valid operation_id")
 		}
+	} else if metadata.Disposition == RemediationControlled {
+		if operationID != "" && !validID(operationID) {
+			return errors.New("CONTROLLED remediation operation_id must be valid when supplied")
+		}
 	} else if operationID != "" {
-		return errors.New("only AUTO_SAFE remediation may bind an operation_id")
+		return errors.New("only AUTO_SAFE or CONTROLLED remediation may bind an operation_id")
 	}
 	return nil
 }

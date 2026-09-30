@@ -7,6 +7,7 @@ import (
 	"setpoint/internal/checkrun"
 	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
+	"setpoint/internal/remediation"
 )
 
 func (handler *Handler) createSite(writer http.ResponseWriter, request *http.Request) {
@@ -83,7 +84,7 @@ func (handler *Handler) createCheckRun(writer http.ResponseWriter, request *http
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(writer, status, decorateCheckRun(run, handler.service.ListCheckDefinitions()))
+	writeJSON(writer, status, decorateCheckRun(run, handler.service.ListCheckDefinitions(), handler.bindings))
 }
 
 func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.Request) {
@@ -98,7 +99,7 @@ func (handler *Handler) listCheckRuns(writer http.ResponseWriter, request *http.
 	}
 	definitions := handler.service.ListCheckDefinitions()
 	for index := range runs {
-		runs[index] = decorateCheckRun(runs[index], definitions)
+		runs[index] = decorateCheckRun(runs[index], definitions, handler.bindings)
 	}
 	writeJSON(writer, http.StatusOK, protocol.CheckRunListResponse{
 		Runs: runs, Limit: normalized.Limit, Offset: normalized.Offset,
@@ -111,15 +112,15 @@ func (handler *Handler) getCheckRun(writer http.ResponseWriter, request *http.Re
 		handler.handleServiceError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, decorateCheckRun(run, handler.service.ListCheckDefinitions()))
+	writeJSON(writer, http.StatusOK, decorateCheckRun(run, handler.service.ListCheckDefinitions(), handler.bindings))
 }
 
-func decorateCheckRun(run checkrun.Resource, definitions []plugin.CheckMetadata) checkrun.Resource {
+func decorateCheckRun(run checkrun.Resource, definitions []plugin.CheckMetadata, bindings *remediation.Registry) checkrun.Resource {
 	remediations := make(map[string]plugin.RemediationMetadata, len(definitions))
 	for _, definition := range definitions {
 		remediations[definition.ID] = definition.Remediation
 	}
-	run.RemediationOffers = checkrun.BuildRemediationOffers(run, remediations)
+	run.RemediationOffers = checkrun.BuildRemediationOffers(run, remediations, bindings)
 	return run
 }
 
@@ -129,7 +130,7 @@ func (handler *Handler) cancelCheckRun(writer http.ResponseWriter, request *http
 		handler.handleServiceError(writer, err)
 		return
 	}
-	response.Run = decorateCheckRun(response.Run, handler.service.ListCheckDefinitions())
+	response.Run = decorateCheckRun(response.Run, handler.service.ListCheckDefinitions(), handler.bindings)
 	writeJSON(writer, http.StatusOK, response)
 }
 

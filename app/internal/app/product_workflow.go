@@ -20,6 +20,8 @@ import (
 	"setpoint/internal/operationrun"
 	"setpoint/internal/plugin"
 	"setpoint/internal/protocol"
+	"setpoint/internal/remediation"
+	"setpoint/internal/remediationbindings"
 	"setpoint/internal/task"
 )
 
@@ -63,6 +65,7 @@ type ProductOperations struct {
 	batch          batchConfirmationRepository
 	checkRuns      batchCheckRunRepository
 	remediations   batchRemediationCatalog
+	bindings       *remediation.Registry
 	now            func() time.Time
 	confirmationMu sync.Mutex
 }
@@ -82,7 +85,11 @@ func newProductOperations(base *OperationsService, runs productOperationReposito
 	if base == nil || runs == nil || lease == nil || execution == nil {
 		return nil, errors.New("base operations service, operation repository, lease supervisor and execution resolver are required")
 	}
-	service := &ProductOperations{base: base, runs: runs, lease: lease, execution: execution, remediations: remediations, now: time.Now}
+	bindings, err := remediationbindings.New()
+	if err != nil {
+		return nil, err
+	}
+	service := &ProductOperations{bindings: bindings, base: base, runs: runs, lease: lease, execution: execution, remediations: remediations, now: time.Now}
 	if remediations != nil {
 		batch, ok := any(runs).(batchConfirmationRepository)
 		if !ok {
@@ -286,7 +293,7 @@ func (service *ProductOperations) preflightOperationBatch(ctx context.Context, c
 	for _, definition := range definitions {
 		remediationMetadata[definition.ID] = definition.Remediation
 	}
-	offers := checkrun.BuildRemediationOffers(source, remediationMetadata)
+	offers := checkrun.BuildRemediationOffers(source, remediationMetadata, service.bindings)
 	offerByIdentity := make(map[string]checkrun.RemediationOffer, len(offers))
 	for _, offer := range offers {
 		offerByIdentity[operationBatchIdentityKey(offer.TaskID, offer.CheckID, offer.NodeID)] = offer
@@ -319,7 +326,7 @@ func (service *ProductOperations) preflightOperationBatch(ctx context.Context, c
 			return staleBatchMember(index, "source finding no longer exists")
 		}
 		offer, ok := offerByIdentity[operationBatchIdentityKey(member.Identity.TaskID, member.Identity.CheckID, member.Identity.NodeID)]
-		if !ok || offer.CheckRunID != checkRunID || offer.Availability != "actionable" || !offer.SupportsAutomaticFix || !offer.SupportsRollback || offer.OperationID == "" || len(offer.OperationParameters) == 0 {
+		if !ok || offer.CheckRunID != checkRunID || offer.Availability != "actionable" || (offer.Disposition != string(plugin.RemediationControlled) && !offer.SupportsAutomaticFix) || !offer.SupportsRollback || offer.OperationID == "" || len(offer.OperationParameters) == 0 {
 			return staleBatchMember(index, "Server remediation capability is not currently actionable")
 		}
 		run, err := service.base.GetOperationRun(ctx, member.RunID)
