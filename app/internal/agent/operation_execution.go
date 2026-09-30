@@ -183,6 +183,10 @@ func (runner *operationExecutionRunner) executeDestructive(ctx context.Context, 
 		}
 		rollback, err := definition.Rollback(ctx, operation.RollbackInput{Runtime: runtime, Plan: contract.Plan, Stage: executionStage(contract), Apply: *contract.Apply, RestorePoint: *contract.RestorePoint, Lease: lease})
 		if err != nil {
+			if meaningfulRollbackFailureEvidence(rollback) {
+				result.Rollback = &rollback
+				return runner.failWithResult(result, "rollback_failed", err)
+			}
 			return runner.fail(contract, "rollback_failed", err)
 		}
 		result.Rollback = &rollback
@@ -201,6 +205,12 @@ func executionStage(contract *task.OperationExecutionContract) *operation.PlanSt
 }
 
 func meaningfulApplyFailureEvidence(result operation.ApplyResult) bool {
+	return strings.TrimSpace(result.Checkpoint) != "" &&
+		strings.TrimSpace(result.State.SchemaVersion) != "" &&
+		len(result.State.Payload) != 0 && json.Valid(result.State.Payload)
+}
+
+func meaningfulRollbackFailureEvidence(result operation.RollbackResult) bool {
 	return strings.TrimSpace(result.Checkpoint) != "" &&
 		strings.TrimSpace(result.State.SchemaVersion) != "" &&
 		len(result.State.Payload) != 0 && json.Valid(result.State.Payload)

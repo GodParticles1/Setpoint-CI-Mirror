@@ -262,6 +262,16 @@ func operationRunExecutionTargets(run operationrun.Resource) []operation.Target 
 }
 
 func validateOperationExecutionResultShape(action task.OperationAction, phase task.Phase, result task.OperationExecutionResult) error {
+	if err := task.ValidateOperationMutationEvidence(result, phase); err != nil {
+		return err
+	}
+	if phase == task.PhaseSucceeded {
+		if result.Apply != nil && result.Apply.Reconnect != nil && result.Apply.Reconnect.BootIDAfter == "" ||
+			result.Rollback != nil && result.Rollback.Reconnect != nil && result.Rollback.Reconnect.BootIDAfter == "" {
+			return errors.New("successful reconnect result requires boot transition evidence")
+		}
+	}
+
 	if !task.ValidResultPhase(phase) {
 		return errors.New("operation execution result phase must be succeeded, failed, or canceled")
 	}
@@ -310,9 +320,19 @@ func validateOperationExecutionResultShape(action task.OperationAction, phase ta
 				}
 			}
 			return nil
-		case task.OperationActionCreateRestorePoint, task.OperationActionRollback:
+		case task.OperationActionCreateRestorePoint:
 			if outputs != 0 {
-				return errors.New("failed mutation action must not carry optimistic success output")
+				return errors.New("failed restore-point action must not carry optimistic success output")
+			}
+			return nil
+		case task.OperationActionRollback:
+			if result.RestorePoint != nil || result.Apply != nil || result.Verification != nil {
+				return errors.New("failed rollback action must not carry mixed action output")
+			}
+			if result.Rollback != nil {
+				if err := validateFailedRollbackEvidence(*result.Rollback); err != nil {
+					return err
+				}
 			}
 			return nil
 		default:
@@ -367,6 +387,19 @@ func validateFailedApplyEvidence(result operation.ApplyResult) error {
 	return nil
 }
 
+func validateFailedRollbackEvidence(result operation.RollbackResult) error {
+	if strings.TrimSpace(result.Checkpoint) == "" {
+		return errors.New("failed rollback evidence requires a checkpoint")
+	}
+	if strings.TrimSpace(result.State.SchemaVersion) == "" {
+		return errors.New("failed rollback evidence requires a state schema version")
+	}
+	if len(result.State.Payload) == 0 || !json.Valid(result.State.Payload) {
+		return errors.New("failed rollback evidence requires valid state payload")
+	}
+	return nil
+}
+
 func operationExecutionResultSnapshot(contract task.OperationExecutionContract, phase task.Phase, result task.OperationExecutionResult, at time.Time) operationrun.ExecutionSnapshot {
 	action := contract.Action
 	stage := operationrun.StageExecutionSnapshot{StageIndex: contract.StageIndex, StageID: contract.Stage.ID, ExecutorNodeID: contract.Stage.ExecutorNodeID}
@@ -385,6 +418,12 @@ func operationExecutionResultSnapshot(contract task.OperationExecutionContract, 
 				stage.VerificationAt = at
 				stage.Verification = result.Verification
 				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Verification: result.Verification})
+			}
+		case task.OperationActionRollback:
+			if result.Rollback != nil {
+				stage.RollbackAt = at
+				stage.Rollback = result.Rollback
+				return executionResultSnapshot(stage, staged, multiNode, operationrun.ExecutionSnapshot{Rollback: result.Rollback})
 			}
 		case task.OperationActionVerifyRollback:
 			if result.Verification != nil && !result.Verification.Passed {

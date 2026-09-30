@@ -15,9 +15,10 @@ import (
 type journalState string
 
 const (
-	journalClaimed   journalState = "claimed"
-	journalExecuting journalState = "executing"
-	journalCompleted journalState = "completed"
+	journalClaimed      journalState = "claimed"
+	journalExecuting    journalState = "executing"
+	journalCompleted    journalState = "completed"
+	journalReconnecting journalState = "reconnecting"
 )
 
 type taskJournalEntry struct {
@@ -167,9 +168,25 @@ func validateJournalEntry(entry taskJournalEntry) error {
 		if entry.Submission != nil {
 			return errors.New("unfinished task journal must not contain a submission")
 		}
+	case journalReconnecting:
+		if err := validateReconnectJournal(entry); err != nil {
+			return err
+		}
 	case journalCompleted:
 		if entry.Submission == nil || entry.Submission.ClaimID != entry.Task.Status.ClaimID {
 			return errors.New("completed task journal requires a matching submission")
+		}
+		if entry.Submission.OperationExecutionResult != nil {
+			if err := task.ValidateOperationMutationEvidence(*entry.Submission.OperationExecutionResult, entry.Submission.Phase); err != nil {
+				return err
+			}
+			handoff, err := reconnectHandoff(entry.Submission)
+			if err != nil {
+				return err
+			}
+			if handoff != nil && entry.Submission.Phase == task.PhaseSucceeded && handoff.BootIDAfter == "" {
+				return errors.New("completed reconnect journal requires boot transition evidence")
+			}
 		}
 	default:
 		return fmt.Errorf("unsupported task journal state %q", entry.State)

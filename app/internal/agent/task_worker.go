@@ -135,6 +135,8 @@ func (worker *TaskWorker) resume(ctx context.Context, entry taskJournalEntry) er
 		return worker.executeClaimed(ctx, entry)
 	case journalExecuting:
 		return worker.cacheAndSubmit(ctx, entry.Task, worker.interruptedSubmission(entry.Task))
+	case journalReconnecting:
+		return worker.resumeReconnect(ctx, entry)
 	case journalCompleted:
 		return worker.submitCached(ctx, entry)
 	default:
@@ -237,7 +239,18 @@ func (worker *TaskWorker) executeOperationAction(ctx, executionContext context.C
 	if err != nil || result.Error != nil {
 		phase = task.PhaseFailed
 	}
-	return worker.cacheAndSubmit(ctx, resource, task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result})
+	submission := task.ResultSubmission{ClaimID: resource.Status.ClaimID, Phase: phase, OperationExecutionResult: &result}
+	if err := task.ValidateOperationMutationEvidence(result, phase); err != nil {
+		return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "operation_mutation_contract_invalid", err))
+	}
+	if phase == task.PhaseSucceeded {
+		if handoff, err := reconnectHandoff(&submission); err != nil {
+			return worker.cacheAndSubmit(ctx, resource, worker.executionFailureSubmission(resource, "operation_reconnect_contract_invalid", err))
+		} else if handoff != nil {
+			return worker.cacheReconnectAndReboot(ctx, resource, submission)
+		}
+	}
+	return worker.cacheAndSubmit(ctx, resource, submission)
 }
 
 func (worker *TaskWorker) cacheAndSubmit(ctx context.Context, resource task.Resource, submission task.ResultSubmission) error {
