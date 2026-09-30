@@ -196,7 +196,6 @@ func TestRC1RealComponentsSurviveServerRestartWithoutTaskReplay(t *testing.T) {
 	if _, err := os.Stat(config.TaskJournalPath); !os.IsNotExist(err) {
 		t.Fatalf("RC1 task journal remains after cleanup: %v", err)
 	}
-	runtime.GC()
 	removeRC1TempRoot(t, tempRoot)
 }
 
@@ -278,16 +277,10 @@ func assertRC1ManagementSurface(t *testing.T, server *httptest.Server) {
 
 func removeRC1TempRoot(t *testing.T, root string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		err := os.RemoveAll(root)
-		_, statErr := os.Stat(root)
-		if err == nil && os.IsNotExist(statErr) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("remove RC1 temporary root: remove=%v stat=%v", err, statErr)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove RC1 temporary root after shutdown: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("RC1 temporary root remains after cleanup: %v", err)
 	}
 }
