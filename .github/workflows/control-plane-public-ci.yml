@@ -38,6 +38,7 @@ jobs:
           assert p["schema"] == "setpoint-control-plane-public-mirror-v1"
           assert p["source_private_repo"] == "GodParticles1/github-control-plane-coordinator"
           assert re.fullmatch(r"[0-9a-f]{40}", p["source_private_sha"])
+          assert p["source_private_sha"] == "07d7559ea9646e57b27f738158be91e53862c025"
           assert p["secrets_excluded"] is True
 
           files = p["projected_files"]
@@ -87,12 +88,16 @@ jobs:
     needs: provenance
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: "false"
     defaults:
       run:
         working-directory: control-plane
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -109,56 +114,19 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Deterministic tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          if find test -type f -name '*.test.mjs' -print -quit 2>/dev/null | grep -q .; then
-            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
-              npm test
-            else
-              node --test test/*.test.mjs
-            fi
-          else
-            echo "No deterministic test files at this exact source SHA"
-          fi
+        run: npm test
 
       - name: Coordinator Wrangler dry run
-        shell: bash
-        run: |
-          set -euo pipefail
-          if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:coordinator'] ? 0 : 1)"; then
-            npm run dry-run:coordinator
-          else
-            npx wrangler deploy --dry-run --config wrangler.jsonc --outdir dist-dryrun/coordinator
-          fi
+        run: npm run dry-run:coordinator
 
       - name: Async ingress Wrangler dry run
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f wrangler.async-ingress.jsonc ]; then
-            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:async'] ? 0 : 1)"; then
-              npm run dry-run:async
-            else
-              npx wrangler deploy --dry-run --config wrangler.async-ingress.jsonc --outdir dist-dryrun/async-ingress
-            fi
-          else
-            echo "Async ingress config not present at this exact source SHA"
-          fi
+        run: npm run dry-run:async
 
       - name: OpenAI observer Wrangler dry run
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f wrangler.openai-observer.jsonc ]; then
-            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['dry-run:openai-observer'] ? 0 : 1)"; then
-              npm run dry-run:openai-observer
-            else
-              npx wrangler deploy --dry-run --config wrangler.openai-observer.jsonc --outdir dist-dryrun/openai-observer
-            fi
-          else
-            echo "OpenAI observer config not present at this exact source SHA"
-          fi
+        run: npm run dry-run:openai-observer
+
+      - name: Reserved passive observer bundle acceptance
+        run: npm run verify:reserved-passive-bundle
 
       - name: Git diff check
         working-directory: .

@@ -1,13 +1,18 @@
 {
   "schema": "setpoint-control-plane-public-mirror-v1",
   "source_private_repo": "GodParticles1/github-control-plane-coordinator",
-  "source_private_sha": "aabe307dc419fb4e57e746037f479ece3026d2fa",
-  "source_private_ci_blob_sha": "08c1f462413ce8b3f2873f3861ee67aa91e9b2df",
+  "source_private_sha": "07d7559ea9646e57b27f738158be91e53862c025",
+  "source_private_ci_blob_sha": "f0257eaea6f534fa6b21d892f9a0cf68cb81425d",
   "projected_files": [
     {
       "source_path": "package.json",
       "projected_path": "control-plane/package.json",
-      "source_blob_sha": "de3077fab81463713227e29eab449f261dfbb7a5"
+      "source_blob_sha": "cc2644cc5bd9cf9bb1fc4ac475419dfd76381109"
+    },
+    {
+      "source_path": "scripts/verify-reserved-passive-bundle.mjs",
+      "projected_path": "control-plane/scripts/verify-reserved-passive-bundle.mjs",
+      "source_blob_sha": "db841b9603b9a938e203db160085f2e9522981dc"
     },
     {
       "source_path": "src/async-ingress.ts",
@@ -42,12 +47,17 @@
     {
       "source_path": "src/openai-consumer.ts",
       "projected_path": "control-plane/src/openai-consumer.ts",
-      "source_blob_sha": "bfd4230008e2a3ad88163c78478f8202dd51edc9"
+      "source_blob_sha": "262ea8fc26f39e65eabf5774597dc5b828c3a40e"
     },
     {
       "source_path": "src/openai-core.js",
       "projected_path": "control-plane/src/openai-core.js",
       "source_blob_sha": "5d5c7912cf09f1b87c31879ebb7f51aa37f922f5"
+    },
+    {
+      "source_path": "src/reserved-passive-observer.js",
+      "projected_path": "control-plane/src/reserved-passive-observer.js",
+      "source_blob_sha": "1774f09d312b0ea44e2a2f18c4375772a6bebbfb"
     },
     {
       "source_path": "test/async-policy.test.mjs",
@@ -58,6 +68,11 @@
       "source_path": "test/github-read-token-normalization.test.mjs",
       "projected_path": "control-plane/test/github-read-token-normalization.test.mjs",
       "source_blob_sha": "a7ce6d9733f1d6be6016b5b80e1ae41053a82946"
+    },
+    {
+      "source_path": "test/helpers/reserved-passive-cases.mjs",
+      "projected_path": "control-plane/test/helpers/reserved-passive-cases.mjs",
+      "source_blob_sha": "9422df21e5dd3c7e104a3589ed3ccb8b09eca686"
     },
     {
       "source_path": "test/live-evidence-contract-correction.test.mjs",
@@ -73,6 +88,11 @@
       "source_path": "test/openai-core.test.mjs",
       "projected_path": "control-plane/test/openai-core.test.mjs",
       "source_blob_sha": "317d8abb3adf2f814c806456969f41dc1a5f6c2a"
+    },
+    {
+      "source_path": "test/reserved-passive.test.mjs",
+      "projected_path": "control-plane/test/reserved-passive.test.mjs",
+      "source_blob_sha": "6a689f3e13c631e7e6ec250ccab4b1c3fd4b8bd9"
     },
     {
       "source_path": "tsconfig.json",
@@ -95,7 +115,7 @@
       "source_blob_sha": "aec4a450d97ec0e6173593b47860586bf1f83524"
     }
   ],
-  "projection_tree_hash_sha256": "9c784986c89308984270c8e02e60e9ff55dab7e921ba2cebab0b3fe67442a130",
-  "public_ci_workflow_sha256": "bbde13feac6011b2b4bb2aa97f323185880600ca996cac6cd52010ff5e8b75c0",
+  "projection_tree_hash_sha256": "ac772617b8a5bd5adb9c7bdddb2c61c74d877e8d32837789963c438a24622d4a",
+  "public_ci_workflow_sha256": "95e315005c94344cf6f274a35bcb59cfaaf06a9925e80fbefde155524bbadaa2",
   "secrets_excluded": true
 }

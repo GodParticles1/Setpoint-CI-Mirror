@@ -8,6 +8,7 @@ import {
 } from "./openai-core.js";
 import { createGitHubReadClient } from "./github-read-tools.js";
 import { executeLiveTakeover } from "./live-takeover.js";
+import reservedPassiveObserver from "./reserved-passive-observer.js";
 
 const INVOCATION_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const RESERVATION_STALE_MS = 60 * 1000;
@@ -184,7 +185,9 @@ export class ModelInvocationRegistry extends DurableObject<OpenAIConsumerEnv> {
   }
 }
 
-export default {
+// Future API automation seam only. No runtime flag selects this handler.
+// Re-enabling it requires a separately reviewed source entry change.
+const futureActiveObserver = {
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
       const rawEnvelope = message.body;
@@ -214,3 +217,5 @@ export default {
     }
   },
 } satisfies ExportedHandler<OpenAIConsumerEnv>;
+
+export default reservedPassiveObserver satisfies ExportedHandler;
